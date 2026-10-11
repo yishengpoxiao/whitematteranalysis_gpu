@@ -81,7 +81,7 @@ atlas is a single run including conversion, embedding, and classification.
 | Atlas similarity through embedding/classification | 0.615 s | 0.396 s | 1.55× |
 | Peak additional atlas tensor memory | 7124.59 MiB | 1879.58 MiB | 73.6% lower |
 | Cluster splitting with point/cell data | 0.469 s | 0.086 s | 5.44× |
-| VTP writing with eight processes | 0.430 s | 0.377 s | 1.14× |
+| VTP writing with 8 processes | 0.430 s | 0.377 s | 1.14× |
 
 Atlas labeling alone for the full **100000 input fibers**, producing in-memory
 output polydata, took **3.95 s**. This excludes registration, preprocessing,
