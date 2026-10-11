@@ -19,16 +19,24 @@ cd whitematteranalysis_gpu
 python -m pip install .
 ```
 
-The existing `requirements.txt` supplies the base dependencies used by `setup.py`.
-CPU acceleration works without PyTorch. For the validated CUDA 12.1 / PyTorch 2.4.1
-combination, optionally install the dated GPU requirements in the same Python environment:
+Choose one dependency profile in the same Python environment:
 
 ```shell
-python -m pip install -r requirements-gpu-2026-10-11.txt
+# CPU: base dependencies, no PyTorch required
+python -m pip install -r requirements_cpu.txt
+
+# GPU: all CPU dependencies plus CUDA 12.1 / PyTorch 2.4.1
+python -m pip install -r requirements_gpu.txt
 python -c "import torch; print(torch.__version__, torch.cuda.is_available())"
 ```
 
-This optional profile targets Linux/Windows x86_64 and Python 3.8–3.12 and uses the
+`setup.py` reads `requirements_cpu.txt`, so `python -m pip install .` installs
+the CPU/base profile by default. The GPU profile includes it using `-r` and adds
+the official CUDA wheel index alongside the base package index. The older
+`requirements.txt` and `requirements-gpu-2026-10-11.txt` remain unchanged as
+preserved dependency snapshots; use the two profiles above for current installation.
+
+The GPU profile targets Linux/Windows x86_64 and Python 3.8–3.12 and uses the
 [official PyTorch CUDA 12.1 index](https://docs.pytorch.org/get-started/previous-versions/#v241).
 GPU execution requires a working NVIDIA GPU/driver. Triton kernels are used when
 Triton is available; the torch CUDA path remains available without Triton.
