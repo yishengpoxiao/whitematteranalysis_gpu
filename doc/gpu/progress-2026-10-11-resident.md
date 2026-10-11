@@ -1,47 +1,57 @@
-# 配准 GPU 数据复用（2026-10-11）
+# Reusing GPU registration inputs (2026-10-11)
 
-## 实现
+## Implementation
 
-`gpu.registration.AffineObjective` 为一次优化保存 float64 固定纤维与移动纤维
-设备数据。`RegisterTractography.compute()` 在优化器开始前上传一次，通过
-`objective_function` 复用，在 `finally` 中清除设备数据引用。每次新的
-`compute()` 都重新创建，支持多尺度、不同受试者以及原位修改后的输入。
-直接调用 `objective_function()` 时仍读取当前 NumPy 输入。
+`gpu.registration.AffineObjective` retains float64 fixed and moving fiber tensors
+for one optimization. `RegisterTractography.compute()` uploads them before the
+optimizer starts, reuses them through `objective_function`, and clears references
+in `finally`. Each new `compute()` recreates the inputs, supporting multiple
+scales, different subjects, and inputs modified in place. Direct calls to
+`objective_function()` still read the current NumPy inputs.
 
-距离、概率、熵、VTK 矩阵构建、CPU 优化器和随机链均沿用上一版算法。
-CPU 后端不会创建此设备对象。3000+1000 条纤维、每条 10 点时，常驻的输入
-设备数据约 0.96 MB，优化完成或失败后不再由注册对象持有。
+Distances, probabilities, entropy, VTK matrix construction, CPU optimizers, and
+the random sampling sequence retain the previous algorithm. The CPU backend does
+not create this device object. For 3000+1000 fibers with 10 points each, resident
+input tensors occupy approximately 0.96 MB; the registration object releases its
+references after successful or failed optimization.
 
-## 验证
+## Validation
 
-- GPU 单元测试 4 项通过：原版 VTK 坐标/目标对拍，三个优化器完整求值序列与
-  最终变换逐位一致，同一 NumPy 对象原位改动后的下一次优化正确刷新，异常
-  退出释放引用，以及 CPU 优化路径对照原版逐位一致。
-- CUDA 不可见时 CPU 测试通过，3 项 GPU 测试明确跳过。
-- 现有 `test_gpu_consistency.py`、`test_cpu_fast.py` 全部通过。
-- 编译检查通过；真实 Slicer 5.2.2 六模块均 SETUP OK，退出码 0。
-- 前轮已发现的旧桩测试引用已删除模块问题未改动，也未计为通过。
+- Four GPU registration tests passed, covering original VTK coordinates/objectives,
+  bitwise equality of full evaluation sequences and final transforms for three
+  optimizers, input refresh after in-place NumPy mutation, release on exceptions,
+  and bitwise agreement of CPU optimization with the original path.
+- With CUDA hidden, the CPU test passed and three GPU tests explicitly skipped.
+- Existing `test_gpu_consistency.py` and `test_cpu_fast.py` checks all passed.
+- Compilation checks passed; all six modules reported SETUP OK in real Slicer
+  5.2.2, with exit code 0.
+- The previously identified stale module import in the stub harness was unchanged
+  and was not counted as a pass.
 
-本轮日志：`/tmp/wma-resident-{tests,no-cuda,consistency,cpu,slicer,real-bench}-2026-10-11.log`。
-测试中优化器刻意使用较小求值预算；达到预算的警告不表示已经收敛。
+Logs: `/tmp/wma-resident-{tests,no-cuda,consistency,cpu,slicer,real-bench}-2026-10-11.log`.
+Tests deliberately use small optimizer evaluation budgets; budget warnings do not
+indicate convergence.
 
-## 性能
+## Performance
 
-RTX 4090 单卡，float64，10 点/纤维。合成输入固定种子 42，预热后两种路径
-交替测量各 30 次，取中位数，计时包含目标函数返回前的同步。
+Single RTX 4090, float64, 10 points per fiber. Synthetic inputs use seed 42. After
+warmup, paths were alternated for 30 runs each; medians include synchronization
+before the objective returns.
 
-| fixed × moving | 上一版无状态 GPU | 常驻数据 GPU | 耗时降低 |
+| fixed × moving | Previous stateless GPU | Resident-input GPU | Time reduction |
 |---|---:|---:|---:|
 | 100 × 100 | 0.997 ms | 0.883 ms | 11.4% |
 | 3000 × 1000 | 9.907 ms | 9.480 ms | 4.3% |
 | 10000 × 100 | 4.472 ms | 3.527 ms | 21.1% |
 
-真实纤维 `/data/yijie/TractData/val_dsi_studio/250932.vtk`，固定种子 42 抽取
-4000 条，3000 fixed + 1000 moving：单次求值中位数 9.872 → 9.414 ms（4.6%）；
-Cobyla 30 次求值含设备初始化的一次计时 0.297 → 0.287 s（3.3%）。完整目标
-序列和最终变换逐位一致。单次优化计时只作参考，不能推算整个多尺度管线收益。
+Real fibers: `/data/yijie/TractData/val_dsi_studio/250932.vtk`. Seed 42 selects
+4000 fibers, split into 3000 fixed and 1000 moving. Median evaluation time fell
+from 9.872 to 9.414 ms (4.6%). One Cobyla run with 30 evaluations, including device
+initialization, fell from 0.297 to 0.287 s (3.3%). Full objective sequences and
+final transforms match bitwise. A single optimization timing is illustrative and
+does not establish a speedup for the complete multiscale pipeline.
 
-可复测：
+Reproduce:
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 /data/yijie/miniconda3/envs/wma/bin/python \
@@ -49,5 +59,6 @@ CUDA_VISIBLE_DEVICES=0 /data/yijie/miniconda3/envs/wma/bin/python \
   --input /data/yijie/TractData/val_dsi_studio/250932.vtk
 ```
 
-非刚性 B-spline 的变换应用仍在 CPU；本轮未重打包 Slicer `.sx`。
-本机 Slicer 的源码符号链接会自动使用新实现。
+At this checkpoint, nonrigid B-spline transform application still ran on CPU and
+the Slicer `.sx` archive was not rebuilt. The local Slicer source symlink uses the
+new implementation.

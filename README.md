@@ -49,7 +49,7 @@ See [GPU development and validation records](doc/gpu/) for tested behavior and m
 
 ## 3D Slicer extension
 
-Install [WMAGPU-Slicer-5.2-2026-10-11-83ceee0.zip](slicer/WMAGPU/dist/WMAGPU-Slicer-5.2-2026-10-11-83ceee0.zip)
+Install [WMAGPU-Slicer-5.2-2026-10-11-english.zip](slicer/WMAGPU/dist/WMAGPU-Slicer-5.2-2026-10-11-english.zip)
 through **Extensions Manager → Install from file**, restart, and open
 **Diffusion → WMA GPU**. If an older WMAGPU extension is already installed, remove
 that version before installing this archive. Remove old WMA additional module paths
