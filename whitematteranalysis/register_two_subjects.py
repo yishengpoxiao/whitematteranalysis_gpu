@@ -136,6 +136,7 @@ class RegisterTractography:
         # (environment variables / command line). Set True or False to
         # override for this registration only.
         self.use_gpu = None
+        self._gpu_objective = None
 
     def _using_gpu(self):
         """Resolve whether the objective should run on the GPU."""
@@ -166,7 +167,9 @@ class RegisterTractography:
         self._x_opt = current_x
 
         # get and apply transforms from current x, then compute objective
-        if self._using_gpu():
+        if self._gpu_objective is not None:
+            obj = self._gpu_objective(current_x, self.mode, self.sigma)
+        elif self._using_gpu():
             import whitematteranalysis.gpu as _gpu
             obj = _gpu.registration.objective_value(
                 self.fixed, self.moving, current_x, self.mode, self.sigma)
@@ -257,53 +260,61 @@ class RegisterTractography:
             print(f"<{os.path.basename(__file__)}> Initial value for X:", self.initial_transform)
 
 
-        if self.optimizer == "Cobyla":
+        # Samples remain fixed throughout this optimizer call. Upload them once;
+        # release them on success or failure before the next scale/subject.
+        if self._using_gpu():
+            self._gpu_objective = wma.gpu.registration.AffineObjective(
+                self.fixed, self.moving)
+        try:
+            if self.optimizer == "Cobyla":
 
-            # Optimize using cobyla. Allows definition of initial and
-            # final step size scales (rhos), as well as constraints.  Here
-            # we use the constraints to encourage that the transform stays a transform.
-            # note disp 0 turns off all display
-            self.final_transform = scipy.optimize.fmin_cobyla(self.objective_function,
-                                                      numpy.multiply(self.initial_transform,self.transform_scaling), self.constraint,
-                                                      maxfun=self.maxfun, rhobeg=self.initial_step,
-                                                      rhoend=self.final_step, disp=0)
-        elif self.optimizer == "BFGS":
-            # Test optimization with BFGS
-            # (Broyden-Fletcher-Goldfarb-Shanno algorithm) refines at each
-            # step an approximation of the Hessian.  L-BFGS:
-            # Limited-memory BFGS Sits between BFGS and conjugate
-            # gradient: in very high dimensions (> 250) the Hessian matrix
-            # is too costly to compute and invert. L-BFGS keeps a low-rank
-            # version. In addition, the scipy version,
-            # scipy.optimize.fmin_l_bfgs_b(), includes box bounds.
-            # Note If you do not specify the gradient to the L-BFGS
-            # solver, you need to add approx_grad=1
-            (self.final_transform, f, dict) = scipy.optimize.fmin_l_bfgs_b(self.objective_function,
-                                                                           numpy.multiply(self.initial_transform,self.transform_scaling),
-                                                                           approx_grad = True,
-                                                                           maxfun=self.maxfun,
-                                                                           maxiter=self.maxfun,
-                                                                           factr=1e12,
-                                                                           epsilon=self.final_step,
-                                                                           iprint=0)
-            print(f, dict)
+                # Optimize using cobyla. Allows definition of initial and
+                # final step size scales (rhos), as well as constraints.  Here
+                # we use the constraints to encourage that the transform stays a transform.
+                # note disp 0 turns off all display
+                self.final_transform = scipy.optimize.fmin_cobyla(self.objective_function,
+                                                          numpy.multiply(self.initial_transform,self.transform_scaling), self.constraint,
+                                                          maxfun=self.maxfun, rhobeg=self.initial_step,
+                                                          rhoend=self.final_step, disp=0)
+            elif self.optimizer == "BFGS":
+                # Test optimization with BFGS
+                # (Broyden-Fletcher-Goldfarb-Shanno algorithm) refines at each
+                # step an approximation of the Hessian.  L-BFGS:
+                # Limited-memory BFGS Sits between BFGS and conjugate
+                # gradient: in very high dimensions (> 250) the Hessian matrix
+                # is too costly to compute and invert. L-BFGS keeps a low-rank
+                # version. In addition, the scipy version,
+                # scipy.optimize.fmin_l_bfgs_b(), includes box bounds.
+                # Note If you do not specify the gradient to the L-BFGS
+                # solver, you need to add approx_grad=1
+                (self.final_transform, f, dict) = scipy.optimize.fmin_l_bfgs_b(self.objective_function,
+                                                                               numpy.multiply(self.initial_transform,self.transform_scaling),
+                                                                               approx_grad = True,
+                                                                               maxfun=self.maxfun,
+                                                                               maxiter=self.maxfun,
+                                                                               factr=1e12,
+                                                                               epsilon=self.final_step,
+                                                                               iprint=0)
+                print(f, dict)
 
-        elif self.optimizer == "Powell":
-            # Test optimization with Powell's method
-            # Powell's method is a conjugate direction method.
-            #(self.final_transform, fopt, direc, iters, funcalls, warnflag, allvecs)
-            (self.final_transform, fopt, direc, iters, funcalls, warnflag) = scipy.optimize.fmin_powell(self.objective_function,
-                                                                            numpy.multiply(self.initial_transform,self.transform_scaling),
-                                                                            xtol=self.initial_step,
-                                                                            ftol=self.final_step,
-                                                                            maxfun=self.maxfun,
-                                                                            maxiter=self.maxfun,
-                                                                            disp=1, full_output=True)
+            elif self.optimizer == "Powell":
+                # Test optimization with Powell's method
+                # Powell's method is a conjugate direction method.
+                #(self.final_transform, fopt, direc, iters, funcalls, warnflag, allvecs)
+                (self.final_transform, fopt, direc, iters, funcalls, warnflag) = scipy.optimize.fmin_powell(self.objective_function,
+                                                                                numpy.multiply(self.initial_transform,self.transform_scaling),
+                                                                                xtol=self.initial_step,
+                                                                                ftol=self.final_step,
+                                                                                maxfun=self.maxfun,
+                                                                                maxiter=self.maxfun,
+                                                                                disp=1, full_output=True)
 
-            print("FLAG:", warnflag)
+                print("FLAG:", warnflag)
 
-        else:
-            print("Unknown optimizer.")
+            else:
+                print("Unknown optimizer.")
+        finally:
+            self._gpu_objective = None
 
         self.final_transform = numpy.divide(self.final_transform, self.transform_scaling)
 

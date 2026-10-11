@@ -74,11 +74,10 @@ def _transform_fiber_tensor(in_array, transform, mode, device):
 
 
 def _prepare_fixed(fixed, device, dtype):
-    """(3, Nf, P) numpy -> (Nf, P, 3) device tensor plus component views."""
+    """(3, Nf, P) NumPy array -> contiguous (Nf, P, 3) device tensor."""
 
     F = numpy.ascontiguousarray(numpy.transpose(fixed, (1, 2, 0)))
-    F = torch.as_tensor(F, dtype=dtype, device=device)
-    return F, F[:, :, 0], F[:, :, 1], F[:, :, 2]
+    return torch.as_tensor(F, dtype=dtype, device=device)
 
 
 def inner_loop_objective(fixed, moving, sigmasq, device=None, chunk_rows=None):
@@ -98,15 +97,20 @@ def inner_loop_objective(fixed, moving, sigmasq, device=None, chunk_rows=None):
     # optimization trajectory is not perturbed more than necessary
     dtype = torch.float64
 
-    F, fx, fy, fz = _prepare_fixed(fixed, dev, dtype)
-    n_fixed = F.shape[0]
-    points_per_fiber = F.shape[1]
+    F = _prepare_fixed(fixed, dev, dtype)
 
     if isinstance(moving, torch.Tensor):
         M = moving.permute(1, 2, 0).contiguous().to(device=dev, dtype=dtype)
     else:
         M = numpy.ascontiguousarray(numpy.transpose(moving, (1, 2, 0)))
         M = torch.as_tensor(M, dtype=dtype)
+    return _inner_loop_objective(F, M, sigmasq, dev, chunk_rows)
+
+
+def _inner_loop_objective(F, M, sigmasq, dev, chunk_rows=None):
+    """Entropy for prepared (N, P, 3) tensors; retain the CPU reduction."""
+    fx, fy, fz = F.unbind(-1)
+    n_fixed, points_per_fiber = F.shape[:2]
     n_moving = M.shape[0]
 
     if chunk_rows is None:
@@ -177,3 +181,21 @@ def objective_value(fixed, moving, transform, mode, sigma, device=None):
 
     moved = _transform_fiber_tensor(moving, transform, mode, device)
     return inner_loop_objective(fixed, moved, sigma * sigma, device=device)
+
+
+class AffineObjective:
+    """Device data shared by all evaluations of one optimizer invocation.
+
+    Create a fresh instance when the sampled fixed/moving fibers change.
+    No source NumPy arrays are retained or modified.
+    """
+
+    def __init__(self, fixed, moving, device=None):
+        self.device = device if device is not None else get_device()
+        self.fixed = _prepare_fixed(fixed, self.device, torch.float64)
+        self.moving = torch.as_tensor(moving, dtype=torch.float64, device=self.device)
+
+    def __call__(self, transform, mode, sigma):
+        moved = _transform_fiber_tensor(self.moving, transform, mode, self.device)
+        moved = moved.permute(1, 2, 0).contiguous()
+        return _inner_loop_objective(self.fixed, moved, sigma * sigma, self.device)
