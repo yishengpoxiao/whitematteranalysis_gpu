@@ -8,6 +8,7 @@ from unittest.mock import patch
 import numpy as np
 import whitematteranalysis as wma
 from whitematteranalysis.gpu import registration as gpu
+from whitematteranalysis.gpu import registration_kernel
 from whitematteranalysis.register_two_subjects import (
     RegisterTractography, inner_loop_objective, transform_fiber_array_numpy)
 
@@ -40,6 +41,70 @@ class RegistrationTests(unittest.TestCase):
                 self.assertEqual(reg.objective_function(transform), value)
                 self.assertEqual(reg.objective_function_values, [value])
 
+    def test_point_kernel_and_optional_fallback(self):
+        import torch
+
+        if registration_kernel.triton is None:
+            self.skipTest('Triton is not installed')
+        rng = np.random.RandomState(2026)
+        for points in (1, 2, 3, 7, 8, 10, 15, 16, 20, 31, 50):
+            with self.subTest(points=points):
+                fixed = gpu._prepare_fixed(
+                    rng.normal(size=(3, 257, points)) * 40., 'cuda', torch.float64)
+                moving = gpu._prepare_fixed(
+                    rng.normal(size=(3, 5, points)) * 40., 'cuda', torch.float64)
+                forward, reverse = registration_kernel.squared_distances(fixed, moving)
+                self.assertTrue(torch.equal(forward, gpu._squared_point_distances(fixed, moving)))
+                self.assertTrue(torch.equal(reverse, gpu._squared_point_distances(fixed, moving.flip(1))))
+                for sigmasq in (1e-5, 100., 1e6):
+                    actual = gpu._pairwise_probability(fixed, moving, sigmasq)
+                    with patch.object(registration_kernel, 'triton', None):
+                        expected = gpu._pairwise_probability(fixed, moving, sigmasq)
+                    self.assertTrue(torch.equal(actual, expected))
+                # Uneven chunks must preserve each moving fiber's probability.
+                actual = gpu._inner_loop_objective(fixed, moving, 100., 'cuda', 2)
+                with patch.object(registration_kernel, 'triton', None):
+                    expected = gpu._inner_loop_objective(fixed, moving, 100., 'cuda', 2)
+                self.assertEqual(actual, expected)
+
+    def test_kernel_uses_selected_cuda_device(self):
+        import torch
+
+        if registration_kernel.triton is None or torch.cuda.device_count() < 2:
+            self.skipTest('Triton and two visible devices are required')
+        previous = torch.cuda.current_device()
+        selected = (previous + 1) % torch.cuda.device_count()
+        fixed = torch.ones((7, 10, 3), dtype=torch.float64, device=selected)
+        moving = torch.zeros((3, 10, 3), dtype=torch.float64, device=selected)
+        actual = gpu._pairwise_probability(fixed, moving, 100.)
+        with patch.object(registration_kernel, 'triton', None):
+            expected = gpu._pairwise_probability(fixed, moving, 100.)
+        self.assertTrue(torch.equal(actual, expected))
+        self.assertEqual(torch.cuda.current_device(), previous)
+
+    def test_out_of_memory_retries_and_terminates(self):
+        import torch
+
+        fixed = torch.zeros((3, 10, 3), dtype=torch.float64, device='cuda')
+        moving = torch.zeros((5, 10, 3), dtype=torch.float64, device='cuda')
+        original = gpu._pairwise_probability
+        sizes = []
+
+        def constrained(fixed, moving, sigmasq):
+            sizes.append(len(moving))
+            if len(moving) > 2:
+                raise torch.cuda.OutOfMemoryError('test tile exceeds memory')
+            return original(fixed, moving, sigmasq)
+
+        expected = gpu._inner_loop_objective(fixed, moving, 100., 'cuda', 2)
+        with patch.object(gpu, '_pairwise_probability', side_effect=constrained):
+            actual = gpu._inner_loop_objective(fixed, moving, 100., 'cuda', 5)
+        self.assertEqual(actual, expected)
+        self.assertEqual(sizes, [5, 2, 2, 1])
+        with patch.object(gpu, '_pairwise_probability', side_effect=torch.cuda.OutOfMemoryError):
+            with self.assertRaises(torch.cuda.OutOfMemoryError):
+                gpu._inner_loop_objective(fixed, moving, 100., 'cuda', 1)
+
     def test_optimizer_reuses_data_and_refreshes_samples(self):
         rng = np.random.RandomState(123)
         reg = RegisterTractography()
@@ -68,7 +133,8 @@ class RegistrationTests(unittest.TestCase):
                         return lambda x, mode, sigma: gpu.objective_value(
                             fixed, moving, x, mode, sigma)
                     reg.objective_function_values.clear()
-                    with patch.object(gpu, 'AffineObjective', side_effect=stateless):
+                    with patch.object(gpu, 'AffineObjective', side_effect=stateless), \
+                            patch.object(registration_kernel, 'triton', None):
                         expected = reg.compute()
                     np.testing.assert_array_equal(actual, expected)
                     np.testing.assert_array_equal(actual_values, reg.objective_function_values)

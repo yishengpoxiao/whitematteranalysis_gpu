@@ -22,6 +22,7 @@ fibers (~1e-15 relative difference in float64).
 import numpy
 
 from .config import get_device
+from . import registration_kernel
 
 try:
     import torch
@@ -109,7 +110,6 @@ def inner_loop_objective(fixed, moving, sigmasq, device=None, chunk_rows=None):
 
 def _inner_loop_objective(F, M, sigmasq, dev, chunk_rows=None):
     """Entropy for prepared (N, P, 3) tensors; retain the CPU reduction."""
-    fx, fy, fz = F.unbind(-1)
     n_fixed, points_per_fiber = F.shape[:2]
     n_moving = M.shape[0]
 
@@ -130,37 +130,10 @@ def _inner_loop_objective(F, M, sigmasq, dev, chunk_rows=None):
         e = min(s + chunk_rows, n_moving)
         try:
             q = M[s:e].to(dev)
-            qx = q[:, :, 0].unsqueeze(1)
-            qy = q[:, :, 1].unsqueeze(1)
-            qz = q[:, :, 2].unsqueeze(1)
-
-            # forward point order (sign of the difference does not matter
-            # after squaring, matches register_two_subjects.py:366-375)
-            dx = fx.unsqueeze(0) - qx
-            dx = dx.mul_(dx)
-            dy = fy.unsqueeze(0) - qy
-            dy = dy.mul_(dy)
-            dz = fz.unsqueeze(0) - qz
-            dz = dz.mul_(dz)
-            d2 = dx.add_(dy)
-            d2 = d2.add_(dz)
-            dist_fwd = d2.sum(-1) / float(points_per_fiber)
-
-            # reversed point order of the moving fiber (:361-364)
-            dx = fx.unsqueeze(0) - qx.flip(2)
-            dx = dx.mul_(dx)
-            dy = fy.unsqueeze(0) - qy.flip(2)
-            dy = dy.mul_(dy)
-            dz = fz.unsqueeze(0) - qz.flip(2)
-            dz = dz.mul_(dz)
-            d2 = dx.add_(dy)
-            d2 = d2.add_(dz)
-            dist_rev = d2.sum(-1) / float(points_per_fiber)
-
-            dist = torch.minimum(dist_fwd, dist_rev)
-            prob = torch.exp(-dist / sigmasq)
-            prob = prob.sum(-1)
+            prob = _pairwise_probability(F, q, sigmasq)
         except torch.cuda.OutOfMemoryError:
+            if chunk_rows == 1:
+                raise
             torch.cuda.empty_cache()
             chunk_rows = max(1, chunk_rows // 2)
             continue
@@ -173,6 +146,31 @@ def _inner_loop_objective(F, M, sigmasq, dev, chunk_rows=None):
     probability = probability / float(n_fixed)
     entropy = torch.sum(-torch.log(probability))
     return float(entropy)
+
+
+def _squared_point_distances(F, q):
+    """Eager reference for environments without Triton."""
+    dx = F[None, :, :, 0] - q[:, None, :, 0]
+    dy = F[None, :, :, 1] - q[:, None, :, 1]
+    dz = F[None, :, :, 2] - q[:, None, :, 2]
+    dx = dx.mul_(dx)
+    dy = dy.mul_(dy)
+    dz = dz.mul_(dz)
+    return dx.add_(dy).add_(dz)
+
+
+def _pairwise_probability(F, q, sigmasq):
+    """Fuse point arithmetic, preserving PyTorch's point/fiber reductions."""
+    if registration_kernel.triton is not None and F.is_cuda:
+        forward, reverse = registration_kernel.squared_distances(F, q)
+    else:
+        forward = _squared_point_distances(F, q)
+        reverse = _squared_point_distances(F, q.flip(1))
+    points = F.shape[1]
+    dist_forward = forward.sum(-1) / float(points)
+    dist_reverse = reverse.sum(-1) / float(points)
+    dist = torch.minimum(dist_forward, dist_reverse)
+    return torch.exp(-dist / sigmasq).sum(-1)
 
 
 def objective_value(fixed, moving, transform, mode, sigma, device=None):
