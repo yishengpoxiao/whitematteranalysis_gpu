@@ -82,6 +82,8 @@ def add_backend_row(form, current_widget):
         "the CPU accelerated backend is vectorized numpy (no torch).")
     form.addRow("Backend:", combo)
     current_widget.backendComboBox = combo
+    from WMATorchInstaller import add_install_row
+    add_install_row(form, current_widget)
     return combo
 
 

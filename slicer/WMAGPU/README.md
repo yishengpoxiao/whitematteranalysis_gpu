@@ -27,10 +27,25 @@
 
 Auto 默认有可用 CUDA 时使用 GPU，否则使用 CPU accelerated。
 GPU 需要在 **Slicer 自身 Python** 中安装与其 Python 版本兼容的 CUDA
-PyTorch；Triton 是可选的进一步加速。安装包不包含 torch/CUDA，也不会
-自动下载依赖。无 torch 即可使用 CPU accelerated；Original 为原 joblib
+PyTorch；Triton 是可选的进一步加速。安装包不包含 torch/CUDA，默认不下载依赖。
+无 torch 即可使用 CPU accelerated；Original 为原 joblib
 算法。显式选择 GPU 而 CUDA 不可用时会给出错误提示。
 默认 float64；随机采样和分类保持 CPU 实现。
+
+五个计算页面的 Backend 下方提供可选安装入口：勾选
+**Allow downloading and installing CUDA PyTorch into Slicer**，再点击
+**Check / Install PyTorch**。扩展使用 Slicer 自带的 PythonSlicer 后台检测；
+已有可用 CUDA PyTorch 时跳过安装，否则从 PyTorch 官方源安装
+`torch==2.4.1+cu121` 及其依赖，随后在新进程中验证 CUDA。
+该版本采用[官方 CUDA 12.1 安装源](https://docs.pytorch.org/get-started/previous-versions/#v241)，
+与本项目已验证的版本一致。安装器支持 Linux/Windows x86_64、Python 3.8–3.12；
+其他环境提示使用 CPU 模式。Windows 尚未实际验证。
+
+下载可能达数 GB，需要网络、可写的 Slicer Python 环境和可用 NVIDIA 驱动。
+安装日志显示在页面中；失败可根据日志处理后重试。完成后须重启 Slicer，
+再选择 Auto/GPU。若安装成功但 CUDA 不可用，会显示检测失败及驱动检查提示。
+勾选状态仅在当前会话中有效，不会修改 Slicer 配置，也不会在启动时自动安装。
+Triton 不单独强制安装，由 torch 的平台依赖决定。
 
 执行过程中会按阶段更新状态；长计算仍在 Slicer 主线程进行，重计算期间
 界面响应可能变慢。当前 GUI 配准页提供仿射模式；后端的非刚性 API 可
@@ -64,6 +79,10 @@ python slicer/WMAGPU/tools/package_extension.py \
 合成数据还覆盖 atlas 构建→重载→标记的簇编号一致性、群体配准输出、
 单文件 MRML 和显式 GPU 不可用时的错误处理。完整 ORG 解剖束 Pipeline
 仍需提供实际 atlas 数据后验证；这些检查不代替真实病例验证。
+
+`Testing/verify_torch_installer.py` 在 Slicer 中验证默认关闭、真实 CUDA 子进程检测、
+已有可用 PyTorch 时跳过安装，以及模拟 pip 成功、失败、CUDA 检测失败、
+进程启动失败和跨页面并发限制。此测试不下载或安装包；首次全量下载仍取决于网络环境。
 
 可在已有 WMA Python 环境中运行有限规模的核心功能测试：
 
