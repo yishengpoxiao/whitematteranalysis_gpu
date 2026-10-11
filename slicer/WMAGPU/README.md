@@ -1,7 +1,16 @@
 # WMA GPU Slicer Extension
 
-基于 `/data/yijie/wma-GPU/slicer` 的六模块界面，包含当前仓库的 GPU/CPU
-后端、joblib 1.4.2 和 xlrd。无需安装独立 WMA；atlas 数据需自行选择。
+提供六个功能模块，包含当前仓库的 GPU/CPU 后端、joblib 1.4.2 和 xlrd。
+无需安装独立 WMA；atlas 数据需自行选择。
+
+源码位于 `slicer/WMAGPU/Modules/`，安装包集中在 `slicer/WMAGPU/dist/`，
+打包脚本和验证脚本分别位于 `tools/` 和 `Testing/`。
+当前安装包为 `dist/WMAGPU-Slicer-5.2-2026-10-11-83ceee0.zip`，对应
+源码提交 `83ceee0`，包含可选 PyTorch 安装入口。
+
+本机旧路径 `/data/yijie/wma-GPU/slicer` 仅保留指向 `Modules/` 的软链接，
+供已有 Slicer Additional module paths 使用；旧版代码、`.sx` 包及安装脚本
+已清理。共享给其他电脑时使用 ZIP 安装包，不依赖该本机软链接。
 
 ## 安装与使用
 
