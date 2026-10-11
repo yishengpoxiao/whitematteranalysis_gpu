@@ -56,6 +56,7 @@ def _build_arg_parser():
 
 def _parse_args(parser):
 
+    wma.gpu.add_gpu_arguments(parser)
     return parser.parse_args()
 
 
@@ -63,6 +64,7 @@ def main():
 
     parser = _build_arg_parser()
     args = _parse_args(parser)
+    wma.gpu.apply_gpu_arguments(args)
 
     if not os.path.exists(args.inputFile):
         print(f"<{os.path.basename(__file__)}> Error: Input file", args.inputFile, "does not exist.")
@@ -259,13 +261,16 @@ def main():
         # prepend the output directory
         fname_c = os.path.join(outdir, fname_c)
         cluster_fnames.append(fname_c)
-        wma.io.write_polydata(pd_c, fname_c)
         color_c = color[mask,:]
         if cluster_size:
             cluster_colors.append(numpy.mean(color_c,0))
         else:
             # avoid error if empty mean above
             cluster_colors.append(color[0,:])
+
+    # write the cluster files in parallel (the XML writer is CPU bound)
+    wma.io.write_polydatas_parallel(pd_c_list, cluster_fnames,
+        jobs=number_of_jobs if number_of_jobs and number_of_jobs > 1 else None)
             
     # Notify user if some clusters empty
     print(f"<{os.path.basename(__file__)}> Checking for empty clusters (can be due to anatomical variability or too few fibers analyzed).")

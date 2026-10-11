@@ -49,6 +49,7 @@ def _build_arg_parser():
 
 def _parse_args(parser):
 
+    wma.gpu.add_gpu_arguments(parser)
     return parser.parse_args()
 
 
@@ -56,6 +57,7 @@ def main():
 
     parser = _build_arg_parser()
     args = _parse_args(parser)
+    wma.gpu.apply_gpu_arguments(args)
 
     print("\n\n<register> =========GROUP REGISTRATION============")
     print(f"<{os.path.basename(__file__)}> Registering to atlas.")

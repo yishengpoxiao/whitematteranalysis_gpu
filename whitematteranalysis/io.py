@@ -75,11 +75,17 @@ def list_transform_files(input_dir):
     input_tf_fnames = sorted(input_tf_fnames)
     return (input_tf_fnames)
 
-def read_and_preprocess_polydata_directory(input_dir, fiber_length, number_of_fibers, random_seed=None, fiber_length_max=None):
+def read_and_preprocess_polydata_directory(input_dir, fiber_length, number_of_fibers, random_seed=None, fiber_length_max=None, parallel_reads=None):
     """ Find and read all .vtk and .vtp files in the given directory
     input_dir. Preprocess with fiber length threshold and downsample
-    to desired number of fibers."""
-    
+    to desired number of fibers.
+
+    File reading is overlapped across a small thread pool (I/O bound);
+    preprocessing and downsampling stay serial and in input order so
+    that the global numpy random state (used by downsample seeding) is
+    reproduced exactly as in the fully serial version.
+    """
+
     input_pd_fnames = list_vtk_files(input_dir)
     num_pd = len(input_pd_fnames)
     
@@ -87,6 +93,30 @@ def read_and_preprocess_polydata_directory(input_dir, fiber_length, number_of_fi
     print(f"<{os.path.basename(__file__)}> Reading vtk and vtp files from directory: ", input_dir)
     print(f"<{os.path.basename(__file__)}> Total number of files found: ", num_pd)
     print(f"<{os.path.basename(__file__)}> =======================================")
+
+    # concurrent read-ahead (I/O bound); bounded window to limit memory
+    read_futures = dict()
+    read_pool = None
+    if parallel_reads is None:
+        parallel_reads = min(4, num_pd)
+    if parallel_reads > 1:
+        try:
+            from concurrent.futures import ThreadPoolExecutor
+            read_pool = ThreadPoolExecutor(max_workers=parallel_reads)
+        except Exception:
+            read_pool = None
+    if read_pool is not None:
+        print(f"<{os.path.basename(__file__)}> Reading files with", parallel_reads, "concurrent reader threads.")
+
+    def submit_next(next_idx):
+        read_futures[next_idx] = read_pool.submit(read_polydata, input_pd_fnames[next_idx])
+
+    window_end = 0
+    if read_pool is not None:
+        for _ in range(parallel_reads + 1):
+            if window_end < num_pd:
+                submit_next(window_end)
+                window_end += 1
 
     input_pds = list()
     subject_ids = list()
@@ -96,7 +126,13 @@ def read_and_preprocess_polydata_directory(input_dir, fiber_length, number_of_fi
         subject_id = os.path.splitext(os.path.basename(fname))[0]
         subject_ids.append(subject_id)
         print(f"<{os.path.basename(__file__)}>  ", sidx + 1, "/",  num_pd, subject_id, " Reading ", fname, "...")
-        pd = read_polydata(fname)
+        if read_pool is not None:
+            pd = read_futures.pop(sidx).result()
+            if window_end < num_pd:
+                submit_next(window_end)
+                window_end += 1
+        else:
+            pd = read_polydata(fname)
         print(f"<{os.path.basename(__file__)}>  ", sidx + 1, "/",  num_pd, subject_id, " Input number of fibers:", pd.GetNumberOfLines())
         pd2 = filter.preprocess(pd, min_length_mm=fiber_length, verbose=False, max_length_mm=fiber_length_max)
         print(f"<{os.path.basename(__file__)}>  ", sidx + 1, "/",  num_pd, subject_id, " Length threshold", fiber_length, "mm. Number of fibers retained:", pd2.GetNumberOfLines())
@@ -105,6 +141,9 @@ def read_and_preprocess_polydata_directory(input_dir, fiber_length, number_of_fi
         input_pds.append(pd3)
         sidx += 1
         print(f"<{os.path.basename(__file__)}> =======================================")
+
+    if read_pool is not None:
+        read_pool.shutdown(wait=False)
 
     print(f"<{os.path.basename(__file__)}> =======================================")
     print(f"<{os.path.basename(__file__)}> Done reading vtk and vtp files from directory: ", input_dir)
@@ -117,7 +156,6 @@ def read_and_preprocess_polydata_directory(input_dir, fiber_length, number_of_fi
                             
 def write_polydata(polydata, filename):
     """Write polydata as vtkPolyData format, according to extension."""
-
     if VERBOSE:
         print("Writing ", filename, "...")
 
@@ -766,3 +804,102 @@ class LateralityResults:
         self.directory = dirname
 
         #print "IMPLEMENT READING OF PARAMETERS TOO"
+
+# ---------------------------------------------------------------------------
+# Parallel writing of many polydata files. The vtkXMLPolyDataWriter's
+# base64 encoding is CPU bound, so writing dozens of cluster files
+# serially dominates large outputs. Data crosses the process boundary
+# as numpy arrays; the fork pool workers only touch vtk/numpy file
+# writing (never CUDA), so this is safe to call after GPU computations.
+
+def _polydata_to_arrays(polydata):
+    """vtkPolyData -> picklable numpy description."""
+    from vtk.util import numpy_support
+
+    offsets = numpy_support.vtk_to_numpy(
+        polydata.GetLines().GetOffsetsArray()).astype(numpy.int64)
+    conn = numpy_support.vtk_to_numpy(
+        polydata.GetLines().GetConnectivityArray()).astype(numpy.int64)
+    points = numpy_support.vtk_to_numpy(polydata.GetPoints().GetData())
+
+    cell_arrays = []
+    cd = polydata.GetCellData()
+    for i in range(cd.GetNumberOfArrays()):
+        cell_arrays.append((cd.GetArrayName(i),
+                            numpy_support.vtk_to_numpy(cd.GetArray(i))))
+    point_arrays = []
+    ptd = polydata.GetPointData()
+    for i in range(ptd.GetNumberOfArrays()):
+        point_arrays.append((ptd.GetArrayName(i),
+                             numpy_support.vtk_to_numpy(ptd.GetArray(i))))
+    scalars = cd.GetScalars()
+    scalars_name = scalars.GetName() if scalars is not None else None
+    return dict(points=points, offsets=offsets, conn=conn,
+                cell_arrays=cell_arrays, point_arrays=point_arrays,
+                scalars_name=scalars_name)
+
+
+def _polydata_from_arrays(d):
+    from vtk.util import numpy_support
+
+    points = vtk.vtkPoints()
+    points.SetData(numpy_support.numpy_to_vtk(
+        numpy.ascontiguousarray(d['points']), deep=True))
+    lines = vtk.vtkCellArray()
+    lines.SetData(
+        numpy_support.numpy_to_vtk(d['offsets'], deep=True,
+                                   array_type=vtk.vtkIdTypeArray().GetDataType()),
+        numpy_support.numpy_to_vtk(d['conn'], deep=True,
+                                   array_type=vtk.vtkIdTypeArray().GetDataType()))
+    pd = vtk.vtkPolyData()
+    pd.SetPoints(points)
+    pd.SetLines(lines)
+    for name, values in d['cell_arrays']:
+        arr = numpy_support.numpy_to_vtk(numpy.ascontiguousarray(values), deep=True)
+        if name:
+            arr.SetName(name)
+        pd.GetCellData().AddArray(arr)
+    for name, values in d['point_arrays']:
+        arr = numpy_support.numpy_to_vtk(numpy.ascontiguousarray(values), deep=True)
+        if name:
+            arr.SetName(name)
+        pd.GetPointData().AddArray(arr)
+    if d.get('scalars_name'):
+        arr = pd.GetCellData().GetArray(d['scalars_name'])
+        if arr is not None:
+            pd.GetCellData().SetActiveScalars(d['scalars_name'])
+    return pd
+
+
+def _write_arrays_worker(item):
+    arrays, fname = item
+    write_polydata(_polydata_from_arrays(arrays), fname)
+
+
+def write_polydatas_parallel(polydatas, filenames, jobs=None):
+    """Write many polydata files with a process pool.
+
+    The polydatas are converted to numpy arrays in this process and
+    rebuilt inside forked workers, so the written files are identical
+    to write_polydata output. Falls back to serial writing for a
+    single file.
+    """
+
+    if jobs is None:
+        jobs = min(8, (os.cpu_count() or 2))
+    jobs = max(1, min(int(jobs), len(polydatas)))
+    if jobs <= 1 or len(polydatas) <= 1:
+        for pd, fname in zip(polydatas, filenames):
+            write_polydata(pd, fname)
+        return
+
+    import multiprocessing
+    items = [(_polydata_to_arrays(pd), fname)
+             for pd, fname in zip(polydatas, filenames)]
+    ctx = multiprocessing.get_context('fork')
+    pool = ctx.Pool(jobs)
+    try:
+        pool.map(_write_arrays_worker, items)
+    finally:
+        pool.close()
+        pool.join()

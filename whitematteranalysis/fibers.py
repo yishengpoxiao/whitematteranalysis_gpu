@@ -354,7 +354,13 @@ class FiberArray:
         input_vtk_polydata.GetLines().InitTraversal()
         line_ptids = vtk.vtkIdList()
         inpoints = input_vtk_polydata.GetPoints()
-        
+
+        # fast path: vectorized gather (bit-identical to the loop below)
+        if self._convert_from_polydata_vectorized(input_vtk_polydata):
+            if self.hemispheres:
+                self.calculate_hemispheres()
+            return
+
         for lidx in range(0, self.number_of_fibers):
 
             input_vtk_polydata.GetLines().GetNextCell(line_ptids)
@@ -383,6 +389,66 @@ class FiberArray:
         # initialize hemisphere info
         if self.hemispheres:
             self.calculate_hemispheres()
+
+    def _convert_from_polydata_vectorized(self, input_vtk_polydata):
+        """Vectorized replacement for the per-line resampling loop.
+
+        Returns False (and does nothing) if the VTK 9 connectivity API
+        needed for it is unavailable, in which case the caller falls
+        back to the original loop. The computation reproduces the loop
+        exactly: for each line, step = (L-1.0)/(P-1.0), output point
+        indices int(round(ptidx * step)) for ptidx in range(P) (Python
+        round and numpy.rint share round-half-to-even), then nearest
+        neighbor point lookup. Points are stored float32 by VTK and
+        upcast to float64, as GetPoint() does.
+
+        """
+
+        try:
+            from vtk.util import numpy_support
+            offsets_array = input_vtk_polydata.GetLines().GetOffsetsArray()
+            conn_array = input_vtk_polydata.GetLines().GetConnectivityArray()
+        except AttributeError:
+            return False
+
+        offsets = numpy_support.vtk_to_numpy(offsets_array).astype(numpy.int64)
+        conn = numpy_support.vtk_to_numpy(conn_array).astype(numpy.int64)
+        points = numpy_support.vtk_to_numpy(input_vtk_polydata.GetPoints().GetData())
+
+        number_of_lines = len(offsets) - 1
+        if number_of_lines != self.number_of_fibers:
+            return False
+
+        P = self.points_per_fiber
+        line_lengths = offsets[1:] - offsets[:-1]
+
+        # step = (input_line_length - 1.0) / (output_line_length - 1.0)
+        steps = (line_lengths.astype(numpy.float64) - 1.0) / (P - 1.0)
+        # ptlist.append(ptidx * step) for ptidx in range(P)
+        positions = numpy.arange(P, dtype=numpy.float64) * steps[:, numpy.newaxis]
+        # int(round(...)): round-half-to-even in both Python and numpy
+        local_ids = numpy.rint(positions).astype(numpy.int64)
+
+        # same sanity check as _calculate_line_indices: last point is included
+        if __debug__ and self.number_of_fibers > 0:
+            test = bool(numpy.all(local_ids[:, -1] == (line_lengths - 1)))
+            if not test:
+                print(f"<{os.path.basename(__file__)}> ERROR: fiber numbers don't add up.")
+                raise AssertionError
+
+        # nearest neighbor lookup of the original point ids
+        global_ids = conn[offsets[:-1][:, numpy.newaxis] + local_ids]
+
+        pts = points[global_ids]  # (n, P, 3) float32, exact upcast below
+        coords = numpy.zeros((self.number_of_fibers, P, 3), dtype=numpy.float64)
+        coords[:, :, 0] = pts[:, :, 0]
+        coords[:, :, 1] = pts[:, :, 1]
+        coords[:, :, 2] = pts[:, :, 2]
+
+        self.fiber_array_r = numpy.ascontiguousarray(coords[:, :, 0])
+        self.fiber_array_a = numpy.ascontiguousarray(coords[:, :, 1])
+        self.fiber_array_s = numpy.ascontiguousarray(coords[:, :, 2])
+        return True
             
     def calculate_hemispheres(self):
 

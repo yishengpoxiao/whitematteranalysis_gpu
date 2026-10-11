@@ -119,6 +119,12 @@ class RegisterTractographyNonrigid(wma.register_two_subjects.RegisterTractograph
         #self.optimizer = "Cobyla"
         self.optimizer = "BFGS"
 
+        # GPU options. None means follow the global wma.gpu config. The
+        # B-spline transform application stays on the CPU (vtk has no
+        # batched BSplineTransform); the entropy objective below runs
+        # on the GPU when enabled.
+        self.use_gpu = None
+
     def initialize_nonrigid_grid(self):
         res = self.nonrigid_grid_resolution
         self.displacement_field_numpy = numpy.zeros(res*res*res*3)
@@ -137,8 +143,16 @@ class RegisterTractographyNonrigid(wma.register_two_subjects.RegisterTractograph
         # get and apply transforms from current_x
         moving = self.transform_fiber_array_numpy(self.moving, scaled_current_x)
 
-        # compute objective
-        obj = wma.register_two_subjects.inner_loop_objective(self.fixed, moving, self.sigma * self.sigma)
+        # compute objective (GPU batched entropy when enabled; the
+        # B-spline transform above stays on the CPU)
+        if self.use_gpu is None:
+            use_gpu_obj = wma.gpu.use_gpu()
+        else:
+            use_gpu_obj = bool(self.use_gpu) and wma.gpu.available()
+        if use_gpu_obj:
+            obj = wma.gpu.registration.inner_loop_objective(self.fixed, moving, self.sigma * self.sigma)
+        else:
+            obj = wma.register_two_subjects.inner_loop_objective(self.fixed, moving, self.sigma * self.sigma)
 
         # keep track of minimum objective so far and its matching transform
         if obj < self.minimum_objective:

@@ -32,9 +32,45 @@ except ImportError:
     print(f"<{os.path.basename(__file__)}> Failed to import joblib, cannot multiprocess.")
     print(f"<{os.path.basename(__file__)}> Please install joblib for this functionality.")
 
-from . import fibers, similarity
+from . import fibers, similarity, gpu
 
 verbose = 0
+
+
+def _lines_offsets_connectivity(inpd):
+    """Fast access to the line structure of a polydata (VTK >= 9).
+
+    Returns (offsets, connectivity, points) as numpy arrays, or None
+    when the VTK connectivity API is unavailable.
+    """
+
+    try:
+        from vtk.util import numpy_support
+        lines = inpd.GetLines()
+        offsets = numpy_support.vtk_to_numpy(lines.GetOffsetsArray()).astype(numpy.int64)
+        conn = numpy_support.vtk_to_numpy(lines.GetConnectivityArray()).astype(numpy.int64)
+        # float64: callers do arithmetic that must match GetPoint()-based
+        # double arithmetic in the original loops
+        points = numpy_support.vtk_to_numpy(inpd.GetPoints().GetData()).astype(numpy.float64)
+        return offsets, conn, points
+    except (AttributeError, ImportError):
+        return None
+
+
+def _gather_conn(conn, offsets, keep_indices):
+    """Connectivity array of the selected lines, preserving order."""
+
+    lengths = (offsets[1:] - offsets[:-1])[keep_indices]
+    starts = offsets[:-1][keep_indices]
+    total = int(lengths.sum())
+    if total == 0:
+        return numpy.zeros(0, dtype=numpy.int64), numpy.zeros(keep_indices.size + 1, dtype=numpy.int64)
+    out_offsets = numpy.zeros(keep_indices.size + 1, dtype=numpy.int64)
+    numpy.cumsum(lengths, out=out_offsets[1:])
+    # for each output point, the source position in the connectivity array
+    idx = numpy.arange(total, dtype=numpy.int64) + \
+        numpy.repeat(starts - out_offsets[:-1], lengths)
+    return conn[idx], out_offsets
 
 
 def add_point_data_array(inpd, data, array_name):
@@ -45,6 +81,17 @@ def add_point_data_array(inpd, data, array_name):
     will be point data, so the per-line values will be duplicated to
     become per-point values (each point on the line) for visualization.
     """
+
+    fast = _lines_offsets_connectivity(inpd)
+    if fast is not None:
+        offsets, conn, points = fast
+        line_lengths = offsets[1:] - offsets[:-1]
+        from vtk.util import numpy_support
+        values = numpy.repeat(numpy.asarray(data), line_lengths).astype(numpy.float32)
+        outarray = numpy_support.numpy_to_vtk(values, deep=True)
+        outarray.SetName(array_name)
+        inpd.GetPointData().AddArray(outarray)
+        return
 
     ptids = vtk.vtkIdList()
     inpd.GetLines().InitTraversal()
@@ -112,6 +159,26 @@ def compute_lengths(inpd):
         print(f"<{os.path.basename(__file__)}> No fibers found in input polydata.")
         return 0, 0
     
+    # measure step size (using first line that has >=5 points)
+    fast = _lines_offsets_connectivity(inpd)
+    if fast is not None:
+        offsets, conn, points = fast
+        line_lengths = offsets[1:] - offsets[:-1]
+        candidates = numpy.nonzero(line_lengths >= 5)[0]
+        if candidates.size == 0:
+            return 0, 0
+        c = candidates[0]
+        # interior segments (ptidx, ptidx+1) for ptidx in 1..n-2, as in the
+        # original loop; (p0-p1)**2 is identical to (p1-p0)**2
+        seg0 = points[conn[offsets[c] + 1:offsets[c + 1] - 1]]
+        seg1 = points[conn[offsets[c] + 2:offsets[c + 1]]]
+        seg_sq = numpy.power(numpy.subtract(seg0, seg1), 2)
+        seg_dists = numpy.sqrt(numpy.sum(seg_sq, axis=1))
+        # sequential accumulation (cumsum) matches the += loop bitwise
+        step_size = seg_dists.cumsum()[-1] / float(seg_dists.size)
+        fiber_lengths = line_lengths.astype(numpy.float64) * step_size
+        return fiber_lengths, step_size
+
     # measure step size (using first line that has >=5 points)
     cell_idx = 0
     ptids = vtk.vtkIdList()
@@ -200,44 +267,64 @@ def preprocess(inpd, min_length_mm,
     num_lines = inpd.GetNumberOfLines()
     # keep track of the lines we will keep
     line_indices = list()
- 
-    for lidx in range(0, num_lines):
-        inpd.GetLines().GetNextCell(ptids)
 
-        # first figure out whether to keep this line
-        keep_curr_fiber = False
-
-        # test for line being long enough
-        if ptids.GetNumberOfIds() > min_length_pts:
-            keep_curr_fiber = True
-
-            if max_length_mm is not None:
-                if ptids.GetNumberOfIds() * step_size > max_length_mm:
-                    keep_curr_fiber = False
-                
-            if remove_u | remove_brainstem:
-                # find first and last points on the fiber
-                ptid = ptids.GetId(0)
-                point0 = inpoints.GetPoint(ptid)
-                ptid = ptids.GetId(ptids.GetNumberOfIds() - 1)
-                point1 = inpoints.GetPoint(ptid)
-
+    # fast path: vectorized line selection, bit-identical to the loop below
+    fast = _lines_offsets_connectivity(inpd)
+    if fast is not None:
+        offsets, conn, points = fast
+        line_lengths = offsets[1:] - offsets[:-1]
+        keep = line_lengths > min_length_pts
+        if max_length_mm is not None:
+            keep &= ~(line_lengths.astype(numpy.float64) * step_size > max_length_mm)
+        if remove_u | remove_brainstem:
+            point0 = points[conn[offsets[:-1]]]
+            point1 = points[conn[offsets[1:] - 1]]
             if remove_u:
-                # compute distance between endpoints
-                endpoint_dist = numpy.sqrt(numpy.sum(numpy.power(
-                            numpy.subtract(point0, point1), 2)))
-                if endpoint_dist < remove_u_endpoint_dist:
-                    keep_curr_fiber = False
-
+                endpoint_dist = numpy.sqrt(
+                    numpy.sum(numpy.power(numpy.subtract(point0, point1), 2), axis=1))
+                keep &= ~(endpoint_dist < remove_u_endpoint_dist)
             if remove_brainstem:
-                # compute average SI (third coordinate) < -40
-                mean_sup_inf = (point0[2] + point1[2]) / 2
-                if mean_sup_inf < -40:
-                    keep_curr_fiber = False
+                mean_sup_inf = (point0[:, 2] + point1[:, 2]) / 2
+                keep &= ~(mean_sup_inf < -40)
+        line_indices = numpy.nonzero(keep)[0]
+    else:
+        for lidx in range(0, num_lines):
+            inpd.GetLines().GetNextCell(ptids)
 
-        # if we are keeping the line record its index
-        if keep_curr_fiber:
-            line_indices.append(lidx)
+            # first figure out whether to keep this line
+            keep_curr_fiber = False
+
+            # test for line being long enough
+            if ptids.GetNumberOfIds() > min_length_pts:
+                keep_curr_fiber = True
+
+                if max_length_mm is not None:
+                    if ptids.GetNumberOfIds() * step_size > max_length_mm:
+                        keep_curr_fiber = False
+
+                if remove_u | remove_brainstem:
+                    # find first and last points on the fiber
+                    ptid = ptids.GetId(0)
+                    point0 = inpoints.GetPoint(ptid)
+                    ptid = ptids.GetId(ptids.GetNumberOfIds() - 1)
+                    point1 = inpoints.GetPoint(ptid)
+
+                if remove_u:
+                    # compute distance between endpoints
+                    endpoint_dist = numpy.sqrt(numpy.sum(numpy.power(
+                                numpy.subtract(point0, point1), 2)))
+                    if endpoint_dist < remove_u_endpoint_dist:
+                        keep_curr_fiber = False
+
+                if remove_brainstem:
+                    # compute average SI (third coordinate) < -40
+                    mean_sup_inf = (point0[2] + point1[2]) / 2
+                    if mean_sup_inf < -40:
+                        keep_curr_fiber = False
+
+            # if we are keeping the line record its index
+            if keep_curr_fiber:
+                line_indices.append(lidx)
 
     fiber_mask = numpy.zeros(num_lines)
     fiber_mask[line_indices] = 1
@@ -263,6 +350,12 @@ def downsample(inpd, output_number_of_lines, return_indices=False, preserve_poin
         num_lines = len(initial_indices)
 
     if num_lines < output_number_of_lines:
+        # fewer fibers than requested: return the input unchanged (also
+        # honoring return_indices, which the early return used to ignore)
+        if return_indices:
+            if initial_indices is None:
+                return inpd, numpy.arange(num_lines)
+            return inpd, numpy.sort(numpy.asarray(initial_indices))
         return inpd
 
     # use the input random seed every time for code testing experiments
@@ -417,7 +510,87 @@ def mask(inpd, fiber_mask, color=None, preserve_point_data=False, preserve_cell_
             print("Data has unexpected tensor name(s). Unable to set active for visualization:", tensor_names)
     # now set cell data visualization inactive.
     outpd.GetCellData().SetActiveScalars(None)
-                
+
+    # fast path: vectorized line selection and array rebuild (VTK >= 9).
+    # Produces the same output polydata as the per-line loop below:
+    # points are re-inserted in kept-line order and cast to float32
+    # (vtkPoints default), tuples are cast to the same output array types.
+    fast = _lines_offsets_connectivity(inpd)
+    if fast is not None:
+        from vtk.util import numpy_support
+        offsets, conn, in_points = fast
+        keep_indices = numpy.nonzero(numpy.asarray(fiber_mask) != 0)[0]
+
+        # the original loop re-inserts every point of every kept line,
+        # so output points are consecutive: the output connectivity is
+        # 0..total-1, and src_conn maps each output point to its
+        # original point id (used to gather coordinates and point data)
+        src_conn, out_offsets = _gather_conn(conn, offsets, keep_indices)
+        total = int(out_offsets[-1]) if out_offsets.size else 0
+        out_conn = numpy.arange(total, dtype=numpy.int64)
+
+        # points: only those referenced by kept lines, in output order
+        out_points_arr = in_points[src_conn].astype(numpy.float32)
+        outpoints.SetData(numpy_support.numpy_to_vtk(out_points_arr, deep=True))
+
+        # lines
+        out_lines = vtk.vtkCellArray()
+        offsets_vtk = numpy_support.numpy_to_vtk(
+            out_offsets, deep=True, array_type=vtk.vtkIdTypeArray().GetDataType())
+        conn_vtk = numpy_support.numpy_to_vtk(
+            out_conn, deep=True, array_type=vtk.vtkIdTypeArray().GetDataType())
+        out_lines.SetData(offsets_vtk, conn_vtk)
+        outlines = out_lines
+
+        # cell data arrays, cast to the same output types as the loop
+        if preserve_cell_data:
+            for idx in range(incelldata.GetNumberOfArrays()):
+                array = incelldata.GetArray(idx)
+                full = numpy_support.vtk_to_numpy(array)
+                values = full[keep_indices]
+                dtype = array.GetDataType()
+                if dtype == 10:
+                    values = values.astype(numpy.float32)
+                elif dtype == 6:
+                    values = values.astype(numpy.int32)
+                elif dtype == 3:
+                    values = values.astype(numpy.uint8)
+                else:
+                    values = values.astype(numpy.float32)
+                out_array = numpy_support.numpy_to_vtk(
+                    numpy.ascontiguousarray(values), deep=True)
+                out_array.SetName(array.GetName())
+                outcelldata.AddArray(out_array)
+
+        # point data arrays are per output point (always float, as the loop)
+        if preserve_point_data:
+            for idx in range(inpointdata.GetNumberOfArrays()):
+                array = inpointdata.GetArray(idx)
+                full = numpy_support.vtk_to_numpy(array)
+                values = full[src_conn].astype(numpy.float32)
+                out_array = numpy_support.numpy_to_vtk(
+                    numpy.ascontiguousarray(values), deep=True)
+                out_array.SetName(array.GetName())
+                outpointdata.AddArray(out_array)
+
+        # color scalars: same array types as the loop, set as active scalars
+        if color is not None:
+            values = numpy.asarray(color)[keep_indices]
+            if outcolors.GetNumberOfComponents() == 3:
+                color_arr = numpy_support.numpy_to_vtk(
+                    numpy.ascontiguousarray(values.astype(numpy.uint8)), deep=True)
+                color_arr.SetNumberOfComponents(3)
+            else:
+                color_arr = numpy_support.numpy_to_vtk(
+                    numpy.ascontiguousarray(values.astype(numpy.float32)), deep=True)
+            outpd.GetCellData().SetScalars(color_arr)
+
+        outpd.SetPoints(outpoints)
+        outpd.SetLines(outlines)
+        if verbose:
+            print(f"<{os.path.basename(__file__)}> Fibers sampled:", outpd.GetNumberOfLines(), "/", inpd.GetNumberOfLines())
+        return outpd
+
     # loop over lines
     inpd.GetLines().InitTraversal()
     outlines.InitTraversal()
@@ -604,7 +777,15 @@ def remove_outliers(inpd, min_fiber_distance, n_jobs=0, distance_method ='Mean')
     min_fiber_distance = min_fiber_distance * min_fiber_distance
     
     # pairwise distance matrix
-    if USE_PARALLEL and n_jobs > 0:
+    if gpu.use_gpu() and gpu.distance.distance_supported(distance_method):
+        print(f"<{os.path.basename(__file__)}> Computing pairwise distances on GPU.")
+        distances = gpu.distance.pairwise_distance_matrix_from_fiber_array(
+            fiber_array, 0, distance_method=distance_method)
+    elif gpu.config.cpu_fast_enabled() and gpu.distance.distance_supported(distance_method):
+        print(f"<{os.path.basename(__file__)}> Computing pairwise distances with the vectorized CPU backend.")
+        distances = gpu.cpu_backend.pairwise_distance_matrix_from_fiber_array(
+            fiber_array, 0, distance_method=distance_method)
+    elif USE_PARALLEL and n_jobs > 0:
         distances = Parallel(n_jobs=n_jobs, verbose=1)(
             delayed(similarity.fiber_distance)(
                 fiber_array.get_fiber(lidx),
@@ -663,11 +844,9 @@ def smooth(inpd, fiber_distance_sigma = 25, points_per_fiber=30, n_jobs=2, upper
 
     # fiber list data structure initialization for easy fiber averaging
     curr_count = list()
-    curr_fibers = list()
     next_fibers = list()
     next_weights = list()
     for lidx in range(0, current_fiber_array.number_of_fibers):
-        curr_fibers.append(current_fiber_array.get_fiber(lidx))
         curr_count.append(1)
 
     fiber_indices = list(range(0, current_fiber_array.number_of_fibers))
@@ -678,7 +857,15 @@ def smooth(inpd, fiber_distance_sigma = 25, points_per_fiber=30, n_jobs=2, upper
     print(f"<{os.path.basename(__file__)}> Computing pairwise distances...")
     
     # pairwise distance matrix
-    if USE_PARALLEL:
+    if gpu.use_gpu() and gpu.distance.distance_supported('Hausdorff'):
+        print(f"<{os.path.basename(__file__)}> Computing pairwise distances on GPU.")
+        distances = gpu.distance.pairwise_distance_matrix_from_fiber_array(
+            current_fiber_array, 0, distance_method='Hausdorff')
+    elif gpu.config.cpu_fast_enabled() and gpu.distance.distance_supported('Hausdorff'):
+        print(f"<{os.path.basename(__file__)}> Computing pairwise distances with the vectorized CPU backend.")
+        distances = gpu.cpu_backend.pairwise_distance_matrix_from_fiber_array(
+            current_fiber_array, 0, distance_method='Hausdorff')
+    elif USE_PARALLEL:
         distances = Parallel(n_jobs=n_jobs, verbose=1)(
             delayed(similarity.fiber_distance)(
             current_fiber_array.get_fiber(lidx),
@@ -697,52 +884,61 @@ def smooth(inpd, fiber_distance_sigma = 25, points_per_fiber=30, n_jobs=2, upper
                     current_fiber_array.get_fiber(lidx),
                     current_fiber_array, 0)
    
-    # gaussian smooth all fibers using local neighborhood
+    # gaussian smooth all fibers using local neighborhood.
+    # Array-based reimplementation of the original Fiber-object loop:
+    # same arithmetic order (scale each neighbor, match_order against the
+    # evolving weighted accumulator, sequential accumulation and division).
+    number_of_fibers = current_fiber_array.number_of_fibers
+    fr = current_fiber_array.fiber_array_r
+    fa = current_fiber_array.fiber_array_a
+    fs = current_fiber_array.fiber_array_s
+    out_r = numpy.zeros_like(fr)
+    out_a = numpy.zeros_like(fa)
+    out_s = numpy.zeros_like(fs)
     for fidx in fiber_indices:
         if (fidx % 100) == 0:
-            print(fidx, '/', current_fiber_array.number_of_fibers)
+            print(fidx, '/', number_of_fibers)
 
         # find indices of all nearby fibers
         indices = numpy.nonzero(distances[fidx] < upper_thresh)[0]
-        local_fibers = list()
-        local_weights = list()
 
-        for idx in indices:
-            dist = distances[fidx][idx]
-            # these are now squared distances
-            weight = numpy.exp(-dist/sigmasq)
-            #weight = numpy.exp(-(dist*dist)/sigmasq)
-            local_fibers.append(curr_fibers[idx] * weight)
-            local_weights.append(weight)
-        # actually perform the weighted average
-        # start with the one under the center of the kernel
-        #out_fiber = curr_fibers[fidx]
-        #out_weights = 1.0
-        out_fiber = local_fibers[0]
-        out_weights = local_weights[0]
-        for fiber in local_fibers[1:]:
-            out_fiber += fiber
-        for weight in local_weights[1:]:
-            out_weights += weight
-        out_fiber = out_fiber / out_weights
-        next_fibers.append(out_fiber)
+        # local_fibers.append(curr_fibers[idx] * weight), then start the
+        # accumulator with the first neighbor and add the rest in order
+        w0 = numpy.exp(-distances[fidx][indices[0]] / sigmasq)
+        j0 = indices[0]
+        acc_r = fr[j0] * w0
+        acc_a = fa[j0] * w0
+        acc_s = fs[j0] * w0
+        out_weights = w0
+        for idx in indices[1:]:
+            wj = numpy.exp(-distances[fidx][idx] / sigmasq)
+            sr = fr[idx] * wj
+            sa = fa[idx] * wj
+            ss = fs[idx] * wj
+            # Fiber.match_order(acc, scaled neighbor)
+            corr = numpy.sum(acc_r * sr + acc_a * sa + acc_s * ss)
+            corr2 = numpy.sum(acc_r * sr[::-1] + acc_a * sa[::-1] + acc_s * ss[::-1])
+            if corr > corr2:
+                acc_r = acc_r + sr
+                acc_a = acc_a + sa
+                acc_s = acc_s + ss
+            else:
+                acc_r = acc_r + sr[::-1]
+                acc_a = acc_a + sa[::-1]
+                acc_s = acc_s + ss[::-1]
+            out_weights = out_weights + wj
+        out_r[fidx] = acc_r / out_weights
+        out_a[fidx] = acc_a / out_weights
+        out_s[fidx] = acc_s / out_weights
         next_weights.append(out_weights)
 
     # set up array for output
-    output_fiber_array = fibers.FiberArray()    
-    output_fiber_array.number_of_fibers = len(curr_fibers)
+    output_fiber_array = fibers.FiberArray()
+    output_fiber_array.number_of_fibers = number_of_fibers
     output_fiber_array.points_per_fiber = points_per_fiber
-    dims = [output_fiber_array.number_of_fibers, output_fiber_array.points_per_fiber]
-    # fiber data
-    output_fiber_array.fiber_array_r = numpy.zeros(dims)
-    output_fiber_array.fiber_array_a = numpy.zeros(dims)
-    output_fiber_array.fiber_array_s = numpy.zeros(dims)
-    next_fidx = 0
-    for next_fib in next_fibers:
-        output_fiber_array.fiber_array_r[next_fidx] = next_fib.r
-        output_fiber_array.fiber_array_a[next_fidx] = next_fib.a
-        output_fiber_array.fiber_array_s[next_fidx] = next_fib.s
-        next_fidx += 1
+    output_fiber_array.fiber_array_r = out_r
+    output_fiber_array.fiber_array_a = out_a
+    output_fiber_array.fiber_array_s = out_s
             
     # convert output to polydata
     outpd = output_fiber_array.convert_to_polydata()
@@ -802,7 +998,15 @@ def anisotropic_smooth(inpd, fiber_distance_threshold, points_per_fiber=30, n_jo
         done[numpy.nonzero(numpy.array(curr_count) >= cluster_max)] = 1
         
         # pairwise distance matrix
-        if USE_PARALLEL:
+        if gpu.use_gpu() and gpu.distance.distance_supported('Hausdorff'):
+            print(f"<{os.path.basename(__file__)}> Computing pairwise distances on GPU.")
+            distances = gpu.distance.pairwise_distance_matrix_from_fiber_array(
+                current_fiber_array, 0, distance_method='Hausdorff')
+        elif gpu.config.cpu_fast_enabled() and gpu.distance.distance_supported('Hausdorff'):
+            print(f"<{os.path.basename(__file__)}> Computing pairwise distances with the vectorized CPU backend.")
+            distances = gpu.cpu_backend.pairwise_distance_matrix_from_fiber_array(
+                current_fiber_array, 0, distance_method='Hausdorff')
+        elif USE_PARALLEL:
             distances = Parallel(n_jobs=n_jobs, verbose=1)(
                 delayed(similarity.fiber_distance)(
                 current_fiber_array.get_fiber(lidx),
@@ -967,7 +1171,15 @@ def laplacian_of_gaussian(inpd, fiber_distance_sigma = 25, points_per_fiber=30, 
     fiber_indices = list(range(0, fiber_array.number_of_fibers))
 
     # pairwise distance matrix
-    if USE_PARALLEL:
+    if gpu.use_gpu() and gpu.distance.distance_supported('Hausdorff'):
+        print(f"<{os.path.basename(__file__)}> Computing pairwise distances on GPU.")
+        distances = gpu.distance.pairwise_distance_matrix_from_fiber_array(
+            fiber_array, 0, distance_method='Hausdorff')
+    elif gpu.config.cpu_fast_enabled() and gpu.distance.distance_supported('Hausdorff'):
+        print(f"<{os.path.basename(__file__)}> Computing pairwise distances with the vectorized CPU backend.")
+        distances = gpu.cpu_backend.pairwise_distance_matrix_from_fiber_array(
+            fiber_array, 0, distance_method='Hausdorff')
+    elif USE_PARALLEL:
         distances = Parallel(n_jobs=n_jobs, verbose=1)(
             delayed(similarity.fiber_distance)(
             fiber_array.get_fiber(lidx),
@@ -986,84 +1198,73 @@ def laplacian_of_gaussian(inpd, fiber_distance_sigma = 25, points_per_fiber=30, 
                     fiber_array.get_fiber(lidx),
                     fiber_array, 0)
 
-    # fiber list data structure initialization for easy fiber averaging
-    fiber_list = list()
-    for lidx in range(0, fiber_array.number_of_fibers):
-        fiber_list.append(fiber_array.get_fiber(lidx))
+    # Array-based reimplementation of the original Fiber-object loop.
+    # match_order decisions are computed against the fixed current fiber
+    # with the same combined-array summation structure; the per-neighbor
+    # accumulation order is preserved.
+    number_of_fibers = fiber_array.number_of_fibers
+    fr = fiber_array.fiber_array_r
+    fa = fiber_array.fiber_array_a
+    fs = fiber_array.fiber_array_s
 
-    filter_vectors = list()
+    filter_vectors_r = numpy.zeros((number_of_fibers, points_per_fiber))
+    filter_vectors_a = numpy.zeros((number_of_fibers, points_per_fiber))
+    filter_vectors_s = numpy.zeros((number_of_fibers, points_per_fiber))
     filter_vector_magnitudes = list()
     filter_confidences = list()
-    
+
     # gaussian smooth all fibers using local neighborhood
     for fidx in fiber_indices:
         if (fidx % 100) == 0:
-            print(fidx, '/', fiber_array.number_of_fibers)
+            print(fidx, '/', number_of_fibers)
 
-        current_fiber = fiber_list[fidx]
+        cur_r = fr[fidx]
+        cur_a = fa[fidx]
+        cur_s = fs[fidx]
 
         # find indices of all nearby fibers
         # this includes the center fiber under the kernel
         indices = numpy.nonzero(distances[fidx] < upper_thresh)[0]
-        local_fibers = list()
-        local_weights = list()
 
-        for idx in indices:
-            dist = distances[fidx][idx]
-            # compute filter kernel weights
-            weight = numpy.exp(-(dist*dist)/sigmasq)
-            #weight = (1 - (dist*dist)/sigmasq) * numpy.exp(-(dist*dist)/(2*sigmasq))
-            local_fibers.append(fiber_list[idx])
-            local_weights.append(weight)
+        # compute filter kernel weights (dist*dist), as in the loop
+        d = distances[fidx][indices]
+        weights = numpy.exp(-(d * d) / sigmasq)
 
-        # actually perform the weighted average
-        #mean_weight = numpy.mean(numpy.array(local_weights))
-        #out_weights = local_weights[0]
-        #for weight in local_weights[1:]:
-        #    out_weights += weight
-        # the weights must sum to 0 for LoG
-        # (response in constant region is 0)
-        #mean_weight = out_weights / len(local_weights)
-        #local_normed_weights = list()
-        #for weight in local_weights:
-        #    local_normed_weights.append(weight - mean_weight)
+        # Fiber.match_order against the fixed current fiber, for all
+        # neighbors at once; the summation structure matches the original
+        nr = fr[indices]
+        na = fa[indices]
+        ns = fs[indices]
+        corr = (cur_r * nr + cur_a * na + cur_s * ns).sum(1)
+        corr2 = (cur_r * nr[:, ::-1] + cur_a * na[:, ::-1] + cur_s * ns[:, ::-1]).sum(1)
+        flip = ~(corr > corr2)
+        mr = numpy.where(flip[:, numpy.newaxis], nr[:, ::-1], nr)
+        ma = numpy.where(flip[:, numpy.newaxis], na[:, ::-1], na)
+        ms = numpy.where(flip[:, numpy.newaxis], ns[:, ::-1], ns)
 
-        #match_fiber = local_fibers[0]
-        #out_vector = local_fibers[0] * local_normed_weights[0]
-        idx = 0
-        for fiber in local_fibers:
-            #out_vector += fiber
-            # ensure fiber ordering by matching to current fiber only
-            # otherwise the order is undefined after fiber subtraction
-            matched_fiber = current_fiber.match_order(fiber)
-            #filtered_fiber = matched_version * local_normed_weights[idx]
-            #filtered_fiber = matched_version * local_weights[idx]
-            if idx == 0:
-                out_vector = fibers.Fiber()
-                out_vector.points_per_fiber = points_per_fiber
-                out_vector.r = numpy.zeros(points_per_fiber)
-                out_vector.a = numpy.zeros(points_per_fiber)
-                out_vector.s = numpy.zeros(points_per_fiber)
-            #filtered_fiber = match_fiber.match_order(fiber)
-            #out_vector.r = (out_vector.r + matched_fiber.r) * local_weights[idx]
-            #out_vector.a = (out_vector.a + matched_fiber.a) * local_weights[idx]
-            #out_vector.s = (out_vector.s + matched_fiber.s) * local_weights[idx]
-            out_vector.r += (current_fiber.r - matched_fiber.r) * local_weights[idx]
-            out_vector.a += (current_fiber.a - matched_fiber.a) * local_weights[idx]
-            out_vector.s += (current_fiber.s - matched_fiber.s) * local_weights[idx]
-            idx += 1
+        # sequential accumulation, matching the original += loop
+        out_r = numpy.zeros(points_per_fiber)
+        out_a = numpy.zeros(points_per_fiber)
+        out_s = numpy.zeros(points_per_fiber)
+        for j in range(indices.size):
+            out_r += (cur_r - mr[j]) * weights[j]
+            out_a += (cur_a - ma[j]) * weights[j]
+            out_s += (cur_s - ms[j]) * weights[j]
 
-        total_weights = numpy.sum(numpy.array(local_weights))
-        out_vector = out_vector / total_weights       
+        total_weights = weights.sum()
+        out_r = out_r / total_weights
+        out_a = out_a / total_weights
+        out_s = out_s / total_weights
 
-        filter_vectors.append(out_vector)
+        filter_vectors_r[fidx] = out_r
+        filter_vectors_a[fidx] = out_a
+        filter_vectors_s[fidx] = out_s
         filter_confidences.append(total_weights)
 
         filter_vector_magnitudes.append(numpy.sqrt(\
-                numpy.multiply(out_vector.r, out_vector.r) + \
-                    numpy.multiply(out_vector.a, out_vector.a) + \
-                    numpy.multiply(out_vector.s, out_vector.s)))
-        #filter_vector_magnitudes.append(numpy.sum(out_vector.r))
+                numpy.multiply(out_r, out_r) + \
+                    numpy.multiply(out_a, out_a) + \
+                    numpy.multiply(out_s, out_s)))
 
 
     # output a new pd!!!!
@@ -1073,9 +1274,11 @@ def laplacian_of_gaussian(inpd, fiber_distance_sigma = 25, points_per_fiber=30, 
     vectors = vtk.vtkFloatArray()
     vectors.SetName('FiberDifferenceVectors')
     vectors.SetNumberOfComponents(3)
-    for vec in filter_vectors:
+    for fidx in fiber_indices:
         for idx in range(points_per_fiber):
-            vectors.InsertNextTuple3(vec.r[idx],vec.a[idx],vec.s[idx])
+            vectors.InsertNextTuple3(filter_vectors_r[fidx, idx],
+                                     filter_vectors_a[fidx, idx],
+                                     filter_vectors_s[fidx, idx])
     magnitudes = vtk.vtkFloatArray()
     magnitudes.SetName('FiberDifferenceMagnitudes')
     magnitudes.SetNumberOfComponents(1)

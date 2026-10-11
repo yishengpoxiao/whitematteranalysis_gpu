@@ -132,7 +132,7 @@ class SubjectToAtlasRegistration:
         step_size = numpy.array([self.initial_step, self.final_step])
         render = False
         
-        (self.transform_as_array, objectives, diff) = wma.congeal_multisubject.congeal_multisubject_inner_loop(fixed, moving, self.transform_as_array, self.mode, self.sigma, subject_idx, iteration_count, self.output_directory, step_size, self.maxfun, render, self.nonrigid_grid_resolution)
+        (self.transform_as_array, objectives, diff) = wma.congeal_multisubject.congeal_multisubject_inner_loop(fixed, moving, self.transform_as_array, self.mode, self.sigma, subject_idx, iteration_count, self.output_directory, step_size, self.maxfun, render, self.nonrigid_grid_resolution, use_gpu=wma.gpu.use_gpu())
 
         if self.mode == "Nonrigid":
             vtktrans = wma.register_two_subjects_nonrigid_bsplines.convert_transform_to_vtk(self.transform_as_array)

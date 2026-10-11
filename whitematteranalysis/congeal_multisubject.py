@@ -283,10 +283,21 @@ class MultiSubjectRegistration:
         print("\nITERATION", self.total_iterations, "STARTING MULTIPROCESSING. NUMBER OF JOBS:", self.parallel_jobs, "\n")
 
         # note we can't pass vtk objects to subprocesses since they can't be pickled.
-        ret = Parallel(
-            n_jobs=self.parallel_jobs, verbose=self.parallel_verbose)(
-                delayed(congeal_multisubject_inner_loop)(fixed, moving, initial_transform, mode, sigma, subject_idx, iteration_count, output_directory, step_size, maxfun, render, grid_resolution)
-                for (fixed, moving, initial_transform, mode, sigma, subject_idx, iteration_count, output_directory, step_size, maxfun, render, grid_resolution) in zip(mean_list, subject_list, self.transforms_as_array, mode_list, sigma_list, subj_idx_list, iteration_list, outdir_list, stepsize_list, maxfun_list, render_list, grid_resolution_list))
+        arglist = [(fixed, moving, initial_transform, mode, sigma, subject_idx, iteration_count, output_directory, step_size, maxfun, render, grid_resolution)
+                   for (fixed, moving, initial_transform, mode, sigma, subject_idx, iteration_count, output_directory, step_size, maxfun, render, grid_resolution) in zip(mean_list, subject_list, self.transforms_as_array, mode_list, sigma_list, subj_idx_list, iteration_list, outdir_list, stepsize_list, maxfun_list, render_list, grid_resolution_list)]
+
+        if wma.gpu.use_gpu():
+            # single-GPU mode: subjects are processed sequentially in
+            # this process, one after another on the same device
+            # (deterministic order, no subprocess bootstrapping)
+            print("Using GPU acceleration for registration (single device, subjects sequential).")
+            ret = [congeal_multisubject_inner_loop(*args, use_gpu=True)
+                   for args in arglist]
+        else:
+            ret = Parallel(
+                n_jobs=self.parallel_jobs, verbose=self.parallel_verbose)(
+                    delayed(congeal_multisubject_inner_loop)(*args)
+                    for args in arglist)
 
             
         #print "RETURNED VALUES", ret
@@ -460,7 +471,7 @@ class MultiSubjectRegistration:
             print("WRITE TXFORMS:", elapsed_time)
 
 
-def congeal_multisubject_inner_loop(mean, subject, initial_transform, mode, sigma, subject_idx, iteration_count, output_directory, step_size, maxfun, render, grid_resolution):
+def congeal_multisubject_inner_loop(mean, subject, initial_transform, mode, sigma, subject_idx, iteration_count, output_directory, step_size, maxfun, render, grid_resolution, use_gpu=None):
 
     """This is the code executed by each subprocess that launches the
 
@@ -502,6 +513,11 @@ def congeal_multisubject_inner_loop(mean, subject, initial_transform, mode, sigm
     register.initial_step = step_size[0]
     register.final_step = step_size[1]
     register.render = render
+
+    # GPU acceleration of the objective function (the nonrigid class
+    # keeps its B-spline transform application on the CPU)
+    if use_gpu is not None:
+        register.use_gpu = use_gpu
 
     # Run the current iteration of optimization.    
     register.compute()

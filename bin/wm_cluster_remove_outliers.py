@@ -56,6 +56,7 @@ def _build_arg_parser():
 
 def _parse_args(parser):
 
+    wma.gpu.add_gpu_arguments(parser)
     return parser.parse_args()
 
 
@@ -63,6 +64,7 @@ def main():
 
     parser = _build_arg_parser()
     args = _parse_args(parser)
+    wma.gpu.apply_gpu_arguments(args)
     
     if not os.path.isdir(args.inputDirectory):
         print(f"<{os.path.basename(__file__)}> Error: Input subject directory", args.inputDirectory, "does not exist.")
@@ -167,7 +169,7 @@ def main():
     
 
     def outlier_removal_one_cluster(ca, cs, outdir, c):
-        
+
         pd_atlas = wma.io.read_polydata(ca)
         pd_subject = wma.io.read_polydata(cs)
         pd_out_fname = os.path.join(outdir, os.path.basename(cs))

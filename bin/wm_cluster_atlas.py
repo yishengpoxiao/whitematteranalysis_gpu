@@ -98,7 +98,9 @@ def main():
     parser.add_argument(
         '-advanced_only_outlier_sigma', action='store', dest="outlierSigma", type=float, default=20.0,
         help='(Advanced parameter that probably should not be changed.) Local sigma used to compute fiber probability in cluster-based outlier removal. The default is 20mm. For stricter clustering, this may be reduced to 15mm.')
+    wma.gpu.add_gpu_arguments(parser)
     args = parser.parse_args()
+    wma.gpu.apply_gpu_arguments(args)
     
     if not os.path.isdir(args.inputDirectory):
         print(f"<{os.path.basename(__file__)}> Error: Input directory", args.inputDirectory, "does not exist or is not a directory.")
@@ -327,12 +329,35 @@ def main():
     readme_file.close()
     
     
-    # read in data
+    # read in data. File reads are overlapped with a small thread pool
+    # (I/O bound); preprocessing/downsampling stay serial and in input
+    # order so the seeded random downsampling is reproduced exactly.
     input_pds = list()
-    for fname in input_polydatas:
+    read_futures = dict()
+    read_pool = None
+    n_read_threads = min(4, number_of_subjects)
+    if n_read_threads > 1:
+        from concurrent.futures import ThreadPoolExecutor
+        read_pool = ThreadPoolExecutor(max_workers=n_read_threads)
+        print(f"<{os.path.basename(__file__)}> Reading files with", n_read_threads, "concurrent reader threads.")
+    window_end = 0
+    def submit_next_read(next_idx):
+        read_futures[next_idx] = read_pool.submit(wma.io.read_polydata, input_polydatas[next_idx])
+    if read_pool is not None:
+        for _ in range(n_read_threads + 1):
+            if window_end < number_of_subjects:
+                submit_next_read(window_end)
+                window_end += 1
+    for sidx, fname in enumerate(input_polydatas):
         # read data
         print(f"<{os.path.basename(__file__)}> Reading input file:", fname)
-        pd = wma.io.read_polydata(fname)
+        if read_pool is not None:
+            pd = read_futures.pop(sidx).result()
+            if window_end < number_of_subjects:
+                submit_next_read(window_end)
+                window_end += 1
+        else:
+            pd = wma.io.read_polydata(fname)
         # preprocessing step: minimum length
         #print f"<{os.path.basename(__file__)}> Preprocessing by length:", fiber_length, "mm."
         pd2 = wma.filter.preprocess(pd, fiber_length,verbose=verbose)
@@ -351,6 +376,8 @@ def main():
         del pd2
         # safe because list has a reference to pd3
         del pd3
+    if read_pool is not None:
+        read_pool.shutdown(wait=False)
     
     # append into one polydata object for clustering
     appender = vtk.vtkAppendPolyData()
