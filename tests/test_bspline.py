@@ -32,6 +32,16 @@ def samples(resolution):
 
 
 class BatchVTKTests(unittest.TestCase):
+    def test_reused_coefficients(self):
+        from vtk.util.numpy_support import vtk_to_numpy
+        for resolution in (2, 3, 4, 6, 10):
+            _, field = samples(resolution)
+            cache = bspline._CoefficientGrid(resolution)
+            for value in (field, -field, field * 0, field * 3):
+                transform = convert_transform_to_vtk(value)
+                expected = vtk_to_numpy(transform.GetCoefficientData().GetPointData().GetScalars())
+                np.testing.assert_array_equal(cache(value), expected)
+
     def test_coordinates_bit_identical(self):
         for resolution in (2, 3, 4, 6, 10):
             fibers, field = samples(resolution)

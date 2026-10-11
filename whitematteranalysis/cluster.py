@@ -10,7 +10,6 @@ import pickle
 
 import vtk
 import numpy
-import colorsys
 try:
     import scipy.cluster.vq
     import scipy.cluster.hierarchy
@@ -1015,18 +1014,27 @@ def _embed_to_rgb(embed):
     # Avoid dark black fibers that the cluster color is hard to see.
     # Convert to hsv, and make all brightness values the same.  That
     # way shadows show geometry, not cluster number.
-    hue = numpy.zeros(color.shape[0])
-    sat = numpy.zeros(color.shape[0])
-    val = numpy.zeros(color.shape[0])
-    for c_idx in range(0, color.shape[0]):
-        hue[c_idx], sat[c_idx], val[c_idx] = \
-            colorsys.rgb_to_hsv(
-            color[c_idx, 0], color[c_idx, 1], color[c_idx, 2])
-
-    val2 = numpy.ones(val.shape) * 180
-    for c_idx in range(0, color.shape[0]):
-        color[c_idx, 0], color[c_idx, 1], color[c_idx, 2] = \
-            colorsys.hsv_to_rgb(hue[c_idx], sat[c_idx], val2[c_idx])
+    # Vectorized colorsys arithmetic, preserving branch priority and rounding.
+    r, g, b = color.T
+    maxc = numpy.maximum(numpy.maximum(r, g), b)
+    minc = numpy.minimum(numpy.minimum(r, g), b)
+    chromatic = minc != maxc
+    delta = numpy.where(chromatic, maxc - minc, 1.)
+    saturation = numpy.where(chromatic, (maxc - minc) / maxc, 0.)
+    rc, gc, bc = (maxc - r) / delta, (maxc - g) / delta, (maxc - b) / delta
+    hue = numpy.where(r == maxc, bc - gc,
+                      numpy.where(g == maxc, 2. + rc - bc, 4. + gc - rc))
+    hue = numpy.where(chromatic, (hue / 6.) % 1., 0.)
+    sector = (hue * 6.).astype(numpy.int64)
+    fraction = hue * 6. - sector
+    p = 180. * (1. - saturation)
+    q = 180. * (1. - saturation * fraction)
+    t = 180. * (1. - saturation * (1. - fraction))
+    sector %= 6
+    cases = [sector == i for i in range(6)]
+    color[:, 0] = numpy.select(cases, [180., q, p, p, t, 180.])
+    color[:, 1] = numpy.select(cases, [t, 180., 180., q, p, p])
+    color[:, 2] = numpy.select(cases, [p, p, t, 180., 180., q])
 
     # To look at this transform of the embed data (sanity check)
     #plt.figure()

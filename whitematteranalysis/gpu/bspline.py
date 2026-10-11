@@ -80,6 +80,35 @@ if registration_kernel.triton is not None:
         tl.store(Output + scalar, original + tl.where(invalid, 0., delta), mask)
 
 
+class _CoefficientGrid:
+    """Reuse VTK's grid and coefficient filter for one optimization."""
+    def __init__(self, resolution):
+        import vtk
+        from vtk.util.numpy_support import numpy_to_vtk
+
+        self.displacement = numpy.zeros((resolution**3, 3), dtype=numpy.float32)
+        self.scalars = numpy_to_vtk(self.displacement)
+        self.scalars.SetName('DisplacementField')
+        self.grid = vtk.vtkImageData()
+        self.grid.SetOrigin(-100., -100., -100.)
+        spacing = 200. / (resolution - 1)
+        self.grid.SetSpacing(spacing, spacing, spacing)
+        self.grid.SetDimensions(resolution, resolution, resolution)
+        self.grid.GetPointData().SetScalars(self.scalars)
+        self.filter = vtk.vtkImageBSplineCoefficients()
+        self.filter.SetInputData(self.grid)
+
+    def __call__(self, displacement):
+        from vtk.util.numpy_support import vtk_to_numpy
+
+        numpy.copyto(self.displacement, numpy.asarray(displacement).reshape(-1, 3))
+        self.scalars.Modified()
+        self.grid.Modified()
+        self.filter.Update()
+        self.filter.UpdateWholeExtent()
+        return vtk_to_numpy(self.filter.GetOutput().GetPointData().GetScalars())
+
+
 class NonrigidObjective:
     """Fixed geometry and GPU inputs owned by one nonrigid optimization."""
     def __init__(self, fixed, moving, resolution, device=None):
@@ -88,6 +117,7 @@ class NonrigidObjective:
         self.resolution = resolution
         self.shape = moving.shape
         if registration_kernel.triton is not None:
+            self.coefficients = _CoefficientGrid(resolution)
             geometry = _sampling_geometry(moving, resolution)
             self.points, self.indices, self.weights, self.invalid = (
                 torch.as_tensor(a, device=self.device) for a in geometry)
@@ -98,12 +128,7 @@ class NonrigidObjective:
         if registration_kernel.triton is None:
             moved = transform_fiber_array_numpy(self.moving, displacement)
             return registration._prepare_fixed(moved, self.device, torch.float64)
-        from vtk.util.numpy_support import vtk_to_numpy
-        from ..register_two_subjects_nonrigid_bsplines import convert_transform_to_vtk
-
-        transform = convert_transform_to_vtk(displacement)
-        coefficients = vtk_to_numpy(transform.GetCoefficientData().GetPointData().GetScalars())
-        coefficients = torch.as_tensor(coefficients, device=self.device)
+        coefficients = torch.as_tensor(self.coefficients(displacement), device=self.device)
         output = torch.empty_like(self.points)
         with torch.cuda.device(self.device):
             _transform[(triton.cdiv(output.numel(), 128),)](

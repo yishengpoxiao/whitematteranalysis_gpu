@@ -1,6 +1,7 @@
 """Cluster ordering, metadata and file bytes survive vectorization/process writing."""
 from pathlib import Path
 import subprocess
+import linecache
 import sys
 import tempfile
 import types
@@ -12,13 +13,15 @@ from vtk.util.numpy_support import numpy_to_vtk
 import whitematteranalysis as wma
 
 
-def baseline_module(name, path):
+def baseline_module(name, path, revision="7a5e5b8"):
     module = types.ModuleType(name)
     module.__package__ = name.rsplit(".", 1)[0]
     module.__file__ = path
-    source = subprocess.check_output(['git', 'show', '7a5e5b8:whitematteranalysis/' + path], text=True)
+    source = subprocess.check_output(['git', 'show', revision + ':whitematteranalysis/' + path], text=True)
     sys.modules[name] = module
-    exec(compile(source, '<baseline ' + path + '>', 'exec'), module.__dict__)
+    filename = '<baseline ' + revision + ' ' + path + '>'
+    linecache.cache[filename] = (len(source), None, source.splitlines(True), filename)
+    exec(compile(source, filename, 'exec'), module.__dict__)
     return module
 
 
@@ -85,6 +88,18 @@ class OutputTests(unittest.TestCase):
                 wma.io.write_polydatas_parallel(polydatas, parallel, jobs=3)
                 for a, b in zip(serial, parallel):
                     self.assertEqual(Path(a).read_bytes(), Path(b).read_bytes())
+
+    def test_colors_match_colorsys(self):
+        rng = np.random.RandomState(2026)
+        embed = rng.normal(size=(10000, 10))
+        embed[:9, :3] = [[0, 0, 0], [1, 1, 1], [-1, -1, -1],
+                         [1, 0, 0], [0, 1, 0], [0, 0, 1],
+                         [1, 1, 0], [1, 0, 1], [0, 1, 1]]
+        embed[9, 0] = np.nan
+        np.testing.assert_array_equal(wma.cluster._embed_to_rgb(embed.copy()),
+                                      self.original._embed_to_rgb(embed.copy()))
+        np.testing.assert_array_equal(wma.cluster._embed_to_rgb(embed[:0].copy()),
+                                      self.original._embed_to_rgb(embed[:0].copy()))
 
     def test_invalid_cluster_is_reported(self):
         with self.assertRaises(IndexError):

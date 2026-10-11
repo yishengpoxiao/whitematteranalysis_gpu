@@ -123,7 +123,7 @@ def _inner_loop_objective(F, M, sigmasq, dev, chunk_rows=None):
         chunk_rows = max(1, min(n_moving, int(int(free_bytes * 0.5) // bytes_per_row),
                                 8192))
 
-    probability = torch.empty(n_moving, dtype=torch.float64)
+    probability = torch.empty(n_moving, dtype=torch.float64, device=dev)
 
     s = 0
     while s < n_moving:
@@ -138,10 +138,11 @@ def _inner_loop_objective(F, M, sigmasq, dev, chunk_rows=None):
             chunk_rows = max(1, chunk_rows // 2)
             continue
 
-        probability[s:e] = prob.cpu()
+        probability[s:e] = prob
         s = e
 
     # register_two_subjects.py:315-329: floor before dividing by n_fixed
+    probability = probability.cpu()
     probability = probability + 1e-20
     probability = probability / float(n_fixed)
     entropy = torch.sum(-torch.log(probability))

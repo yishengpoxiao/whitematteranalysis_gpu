@@ -34,7 +34,7 @@ try:
 except ImportError:  # allow import of this module without torch
     torch = None
 
-from . import fiber_tensors
+from . import fiber_tensors, distance_kernel
 
 # Methods with a GPU implementation. Landmarks/Frechet/Mean_shape stay
 # on the CPU path (see gpu.distance_supported).
@@ -112,6 +112,11 @@ def _fiber_block_distances(q, f, threshold, distance_method, sigmasq):
     (b, m) result. Matches similarity.fiber_distance without bilateral."""
 
     points_per_fiber = q.shape[1]
+    if (distance_kernel.triton is not None and q.is_cuda and q.dtype == f.dtype == torch.float64
+            and q.is_contiguous() and f.is_contiguous()
+            and points_per_fiber <= 32
+            and distance_method in ('Mean', 'MeanSquared', 'Hausdorff')):
+        return distance_kernel.fiber_distances(q, f, threshold, distance_method)
     fwd = _reduce_points(_pointwise_squared_distance(q, f),
                          distance_method, threshold, sigmasq, points_per_fiber)
     rev = _reduce_points(_pointwise_squared_distance(q.flip(1), f),
