@@ -26,9 +26,6 @@ import vtk
 import vtk.util.numpy_support
 import os
 
-# debug only
-#import resource
-
 try:
     from joblib import Parallel, delayed
     USE_PARALLEL = 1
@@ -51,14 +48,14 @@ class RegisterTractographyNonrigid(wma.register_two_subjects.RegisterTractograph
         
         iters = self.objective_computations
         #len(self.objective_function_values)
-        print_every = int(self.maxfun  / 10)
+        print_every = max(1, int(self.maxfun / 10))
         if iters % print_every == 0:
             elapsed_time = time.time() - self.last_time
             self.last_time = time.time()
             self.total_time = time.time() - self.start_time
             #print iters, "/", self.maxfun, "Total time:", self.total_time, "Last iters:", elapsed_time, "Per iter:", elapsed_time / print_every, "Memory:", resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
             progress_file = open(self.progress_filename, 'a')
-            print(iters, "/", self.maxfun, "Total time:", self.total_time, "Last iters:", elapsed_time, "Per iter:", elapsed_time / print_every, "Memory:", resource.getrusage(resource.RUSAGE_SELF).ru_maxrss, file=progress_file)
+            print(iters, "/", self.maxfun, "Total time:", self.total_time, "Last iters:", elapsed_time, "Per iter:", elapsed_time / print_every, file=progress_file)
             progress_file.close()    
         return penalty
     
@@ -119,11 +116,9 @@ class RegisterTractographyNonrigid(wma.register_two_subjects.RegisterTractograph
         #self.optimizer = "Cobyla"
         self.optimizer = "BFGS"
 
-        # GPU options. None means follow the global wma.gpu config. The
-        # B-spline transform application stays on the CPU (vtk has no
-        # batched BSplineTransform); the entropy objective below runs
-        # on the GPU when enabled.
+        # GPU inputs and B-spline sampling geometry live for one compute call.
         self.use_gpu = None
+        self._gpu_objective = None
 
     def initialize_nonrigid_grid(self):
         res = self.nonrigid_grid_resolution
@@ -140,18 +135,14 @@ class RegisterTractographyNonrigid(wma.register_two_subjects.RegisterTractograph
         #scaled_current_x = current_x * 0.01
         scaled_current_x = current_x / self.scaling
         
-        # get and apply transforms from current_x
-        moving = self.transform_fiber_array_numpy(self.moving, scaled_current_x)
-
-        # compute objective (GPU batched entropy when enabled; the
-        # B-spline transform above stays on the CPU)
-        if self.use_gpu is None:
-            use_gpu_obj = wma.gpu.use_gpu()
+        if self._gpu_objective is not None:
+            obj = self._gpu_objective(scaled_current_x, self.sigma)
+        elif self._using_gpu():
+            from .gpu.bspline import NonrigidObjective
+            objective = NonrigidObjective(self.fixed, self.moving, self.nonrigid_grid_resolution)
+            obj = objective(scaled_current_x, self.sigma)
         else:
-            use_gpu_obj = bool(self.use_gpu) and wma.gpu.available()
-        if use_gpu_obj:
-            obj = wma.gpu.registration.inner_loop_objective(self.fixed, moving, self.sigma * self.sigma)
-        else:
+            moving = self.transform_fiber_array_numpy(self.moving, scaled_current_x)
             obj = wma.register_two_subjects.inner_loop_objective(self.fixed, moving, self.sigma * self.sigma)
 
         # keep track of minimum objective so far and its matching transform
@@ -179,45 +170,8 @@ class RegisterTractographyNonrigid(wma.register_two_subjects.RegisterTractograph
         return obj
 
     def transform_fiber_array_numpy(self, in_array, transform):
-        """Transform in_array of R,A,S by transform (a list of source points).  Transformed fibers are returned.
-        """
-        (dims, number_of_fibers, points_per_fiber) = in_array.shape
-        out_array = numpy.zeros(in_array.shape)
-
-        vtktrans = convert_transform_to_vtk(transform)
-        #print "2:", vtktrans
-        #vtktrans = vtk.vtkTransform()
-        
-        # Transform moving fiber array by applying transform to original fibers
-        for lidx in range(0, number_of_fibers):
-            for pidx in range(0, points_per_fiber):
-                pt = vtktrans.TransformPoint(in_array[0, lidx, pidx],
-                                            in_array[1, lidx, pidx], 
-                                            in_array[2, lidx, pidx])
-                out_array[0, lidx, pidx] = pt[0]
-                out_array[1, lidx, pidx] = pt[1]
-                out_array[2, lidx, pidx] = pt[2]
-
-        #print in_array[0, lidx, pidx], in_array[1, lidx, pidx], in_array[2, lidx, pidx], "===>>>", out_array[0, lidx, pidx], out_array[1, lidx, pidx], out_array[2, lidx, pidx]
-        del vtktrans
-
-        ## uncomment for testing only
-        ## # convert it back to a fiber object and render it
-        ## global __render_count
-        ## if (numpy.mod(__render_count, 500) == 0) & False:
-        ##     fiber_array = wma.fibers.FiberArray()
-        ##     fiber_array.fiber_array_r = out_array[0,:,:]
-        ##     fiber_array.fiber_array_a = out_array[1,:,:]
-        ##     fiber_array.fiber_array_s = out_array[2,:,:]
-        ##     fiber_array.points_per_fiber = points_per_fiber
-        ##     fiber_array.number_of_fibers = number_of_fibers
-        ##     pd = fiber_array.convert_to_polydata()
-        ##     ren = wma.render.render(pd, number_of_fibers, verbose=False)
-        ##     ren.save_views('.', 'moving_{0:05d}_'.format(__render_count)+str(time.clock())[-5:-1])
-        ##     del ren
-        ## __render_count += 1
-
-        return out_array
+        from .gpu.bspline import transform_fiber_array_numpy
+        return transform_fiber_array_numpy(in_array, transform)
 
     def compute(self):
 
@@ -283,71 +237,78 @@ class RegisterTractographyNonrigid(wma.register_two_subjects.RegisterTractograph
         # initialize time for objective function computations
         self.last_time = time.time()
 
-        if self.optimizer == "Cobyla":
+        if self._using_gpu():
+            from .gpu.bspline import NonrigidObjective
+            self._gpu_objective = NonrigidObjective(
+                self.fixed, self.moving, self.nonrigid_grid_resolution)
+        try:
+            if self.optimizer == "Cobyla":
 
-            print("INITIAL transform shape", self.initial_transform.shape)
-            # Optimize using cobyla. Allows definition of initial and
-            # final step size scales (rhos), as well as constraints.  Here
-            # we use the constraints to encourage that the transform stays a transform.
-            # note disp 0 turns off all display
-            not_used = scipy.optimize.fmin_cobyla(self.objective_function,
-                                                  self.initial_transform * self.scaling, self.constraint,
-                                                  maxfun=self.maxfun, rhobeg=self.initial_step * self.scaling,
-                                                  rhoend=self.final_step * self.scaling, disp=1)
-        elif self.optimizer == "BFGS":
-            # Test optimization with BFGS
-            # (Broyden-Fletcher-Goldfarb-Shanno algorithm) refines at each
-            # step an approximation of the Hessian.  L-BFGS:
-            # Limited-memory BFGS Sits between BFGS and conjugate
-            # gradient: in very high dimensions (> 250) the Hessian matrix
-            # is too costly to compute and invert. L-BFGS keeps a low-rank
-            # version. In addition, the scipy version,
-            # scipy.optimize.fmin_l_bfgs_b(), includes box bounds.
-            # Note If you do not specify the gradient to the L-BFGS
-            # solver, you need to add approx_grad=1
-            # list of (min,max) pairs for the values being optimized. Assume we never should move by >30mm
-            #bounds = list()
-            #for lm in self.target_landmarks:
-            #    bounds.append((lm-30,lm+30))
-            ## (self.final_transform, f, dict) = scipy.optimize.fmin_l_bfgs_b(self.objective_function,
-            ##                                                                self.initial_transform,
-            ##                                                                approx_grad = True,
-            ##                                                                maxfun=self.maxfun,
-            ##                                                                maxiter=self.maxfun,
-            ##                                                                factr=1e12,
-            ##                                                                epsilon=self.final_step,
-            ##                                                                iprint=0,
-            ##                                                                bounds=bounds)
-            #maxiter=1,
-            try:
-                (not_used, f, dict) = scipy.optimize.fmin_l_bfgs_b(self.objective_function,
-                                                                           self.initial_transform * self.scaling,
-                                                                           approx_grad = True,
-                                                                           maxfun=self.maxfun,
-                                                                           maxiter=2,
-                                                                           factr=1e12,
-                                                                           epsilon=self.final_step * self.scaling,
-                                                                           iprint=1)
-            except:
-                print("EXCEPTION WAS CAUGHT, total objectives:", self.objective_computations)
-            #print f, dict
+                print("INITIAL transform shape", self.initial_transform.shape)
+                # Optimize using cobyla. Allows definition of initial and
+                # final step size scales (rhos), as well as constraints.  Here
+                # we use the constraints to encourage that the transform stays a transform.
+                # note disp 0 turns off all display
+                not_used = scipy.optimize.fmin_cobyla(self.objective_function,
+                                                      self.initial_transform * self.scaling, self.constraint,
+                                                      maxfun=self.maxfun, rhobeg=self.initial_step * self.scaling,
+                                                      rhoend=self.final_step * self.scaling, disp=1)
+            elif self.optimizer == "BFGS":
+                # Test optimization with BFGS
+                # (Broyden-Fletcher-Goldfarb-Shanno algorithm) refines at each
+                # step an approximation of the Hessian.  L-BFGS:
+                # Limited-memory BFGS Sits between BFGS and conjugate
+                # gradient: in very high dimensions (> 250) the Hessian matrix
+                # is too costly to compute and invert. L-BFGS keeps a low-rank
+                # version. In addition, the scipy version,
+                # scipy.optimize.fmin_l_bfgs_b(), includes box bounds.
+                # Note If you do not specify the gradient to the L-BFGS
+                # solver, you need to add approx_grad=1
+                # list of (min,max) pairs for the values being optimized. Assume we never should move by >30mm
+                #bounds = list()
+                #for lm in self.target_landmarks:
+                #    bounds.append((lm-30,lm+30))
+                ## (self.final_transform, f, dict) = scipy.optimize.fmin_l_bfgs_b(self.objective_function,
+                ##                                                                self.initial_transform,
+                ##                                                                approx_grad = True,
+                ##                                                                maxfun=self.maxfun,
+                ##                                                                maxiter=self.maxfun,
+                ##                                                                factr=1e12,
+                ##                                                                epsilon=self.final_step,
+                ##                                                                iprint=0,
+                ##                                                                bounds=bounds)
+                #maxiter=1,
+                try:
+                    (not_used, f, dict) = scipy.optimize.fmin_l_bfgs_b(self.objective_function,
+                                                                               self.initial_transform * self.scaling,
+                                                                               approx_grad = True,
+                                                                               maxfun=self.maxfun,
+                                                                               maxiter=2,
+                                                                               factr=1e12,
+                                                                               epsilon=self.final_step * self.scaling,
+                                                                               iprint=1)
+                except:
+                    print("EXCEPTION WAS CAUGHT, total objectives:", self.objective_computations)
+                #print f, dict
 
-        elif self.optimizer == "Powell":
-            # Test optimization with Powell's method
-            # Powell's method is a conjugate direction method.
-            #(self.final_transform, fopt, direc, iters, funcalls, warnflag, allvecs)
-            (self.final_transform, fopt, direc, iters, funcalls, warnflag) = scipy.optimize.fmin_powell(self.objective_function,
-                                                                            self.initial_transform,
-                                                                            xtol=self.initial_step,
-                                                                            ftol=self.final_step,
-                                                                            maxfun=self.maxfun,
-                                                                            maxiter=self.maxfun,
-                                                                            disp=1, full_output=True)
+            elif self.optimizer == "Powell":
+                # Test optimization with Powell's method
+                # Powell's method is a conjugate direction method.
+                #(self.final_transform, fopt, direc, iters, funcalls, warnflag, allvecs)
+                (self.final_transform, fopt, direc, iters, funcalls, warnflag) = scipy.optimize.fmin_powell(self.objective_function,
+                                                                                self.initial_transform,
+                                                                                xtol=self.initial_step,
+                                                                                ftol=self.final_step,
+                                                                                maxfun=self.maxfun,
+                                                                                maxiter=self.maxfun,
+                                                                                disp=1, full_output=True)
 
-            print("TRANS:", self.final_transform, "FLAG:", warnflag)
+                print("TRANS:", self.final_transform, "FLAG:", warnflag)
 
-        else:
-            print("Unknown optimizer.")
+            else:
+                print("Unknown optimizer.")
+        finally:
+            self._gpu_objective = None
 
         progress_file = open(self.progress_filename, 'a')
         self.total_time = time.time() - self.start_time

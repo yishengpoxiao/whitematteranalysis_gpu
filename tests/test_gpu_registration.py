@@ -47,7 +47,7 @@ class RegistrationTests(unittest.TestCase):
         if registration_kernel.triton is None:
             self.skipTest('Triton is not installed')
         rng = np.random.RandomState(2026)
-        for points in (1, 2, 3, 7, 8, 10, 15, 16, 20, 31, 50):
+        for points in (1, 2, 3, 7, 8, 10, 15, 16, 20, 31, 32, 50):
             with self.subTest(points=points):
                 fixed = gpu._prepare_fixed(
                     rng.normal(size=(3, 257, points)) * 40., 'cuda', torch.float64)
@@ -56,6 +56,9 @@ class RegistrationTests(unittest.TestCase):
                 forward, reverse = registration_kernel.squared_distances(fixed, moving)
                 self.assertTrue(torch.equal(forward, gpu._squared_point_distances(fixed, moving)))
                 self.assertTrue(torch.equal(reverse, gpu._squared_point_distances(fixed, moving.flip(1))))
+                mean, reverse_mean = registration_kernel.mean_squared_distances(fixed, moving)
+                self.assertTrue(torch.equal(mean, forward.sum(2) / points))
+                self.assertTrue(torch.equal(reverse_mean, reverse.sum(2) / points))
                 for sigmasq in (1e-5, 100., 1e6):
                     actual = gpu._pairwise_probability(fixed, moving, sigmasq)
                     with patch.object(registration_kernel, 'triton', None):

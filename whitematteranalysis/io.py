@@ -806,100 +806,44 @@ class LateralityResults:
         #print "IMPLEMENT READING OF PARAMETERS TOO"
 
 # ---------------------------------------------------------------------------
-# Parallel writing of many polydata files. The vtkXMLPolyDataWriter's
-# base64 encoding is CPU bound, so writing dozens of cluster files
-# serially dominates large outputs. Data crosses the process boundary
-# as numpy arrays; the fork pool workers only touch vtk/numpy file
-# writing (never CUDA), so this is safe to call after GPU computations.
-
-def _polydata_to_arrays(polydata):
-    """vtkPolyData -> picklable numpy description."""
-    from vtk.util import numpy_support
-
-    offsets = numpy_support.vtk_to_numpy(
-        polydata.GetLines().GetOffsetsArray()).astype(numpy.int64)
-    conn = numpy_support.vtk_to_numpy(
-        polydata.GetLines().GetConnectivityArray()).astype(numpy.int64)
-    points = numpy_support.vtk_to_numpy(polydata.GetPoints().GetData())
-
-    cell_arrays = []
-    cd = polydata.GetCellData()
-    for i in range(cd.GetNumberOfArrays()):
-        cell_arrays.append((cd.GetArrayName(i),
-                            numpy_support.vtk_to_numpy(cd.GetArray(i))))
-    point_arrays = []
-    ptd = polydata.GetPointData()
-    for i in range(ptd.GetNumberOfArrays()):
-        point_arrays.append((ptd.GetArrayName(i),
-                             numpy_support.vtk_to_numpy(ptd.GetArray(i))))
-    scalars = cd.GetScalars()
-    scalars_name = scalars.GetName() if scalars is not None else None
-    return dict(points=points, offsets=offsets, conn=conn,
-                cell_arrays=cell_arrays, point_arrays=point_arrays,
-                scalars_name=scalars_name)
+_writer_polydatas = None
 
 
-def _polydata_from_arrays(d):
-    from vtk.util import numpy_support
-
-    points = vtk.vtkPoints()
-    points.SetData(numpy_support.numpy_to_vtk(
-        numpy.ascontiguousarray(d['points']), deep=True))
-    lines = vtk.vtkCellArray()
-    lines.SetData(
-        numpy_support.numpy_to_vtk(d['offsets'], deep=True,
-                                   array_type=vtk.vtkIdTypeArray().GetDataType()),
-        numpy_support.numpy_to_vtk(d['conn'], deep=True,
-                                   array_type=vtk.vtkIdTypeArray().GetDataType()))
-    pd = vtk.vtkPolyData()
-    pd.SetPoints(points)
-    pd.SetLines(lines)
-    for name, values in d['cell_arrays']:
-        arr = numpy_support.numpy_to_vtk(numpy.ascontiguousarray(values), deep=True)
-        if name:
-            arr.SetName(name)
-        pd.GetCellData().AddArray(arr)
-    for name, values in d['point_arrays']:
-        arr = numpy_support.numpy_to_vtk(numpy.ascontiguousarray(values), deep=True)
-        if name:
-            arr.SetName(name)
-        pd.GetPointData().AddArray(arr)
-    if d.get('scalars_name'):
-        arr = pd.GetCellData().GetArray(d['scalars_name'])
-        if arr is not None:
-            pd.GetCellData().SetActiveScalars(d['scalars_name'])
-    return pd
+def _initialize_polydata_writer(polydatas):
+    global _writer_polydatas
+    _writer_polydatas = polydatas
 
 
-def _write_arrays_worker(item):
-    arrays, fname = item
-    write_polydata(_polydata_from_arrays(arrays), fname)
+def _write_polydata_index(item):
+    index, filename = item
+    write_polydata(_writer_polydatas[index], filename)
 
 
 def write_polydatas_parallel(polydatas, filenames, jobs=None):
-    """Write many polydata files with a process pool.
+    """Write read-only polydatas inherited by CPU-only fork workers.
 
-    The polydatas are converted to numpy arrays in this process and
-    rebuilt inside forked workers, so the written files are identical
-    to write_polydata output. Falls back to serial writing for a
-    single file.
+    Only indices and filenames cross the queue. No VTK serialization or
+    reconstruction is needed; topology, field data and active attributes
+    remain intact. Workers never access CUDA.
     """
+    import multiprocessing
 
     if jobs is None:
         jobs = min(8, (os.cpu_count() or 2))
     jobs = max(1, min(int(jobs), len(polydatas)))
-    if jobs <= 1 or len(polydatas) <= 1:
+    if jobs == 1:
         for pd, fname in zip(polydatas, filenames):
             write_polydata(pd, fname)
         return
-
-    import multiprocessing
-    items = [(_polydata_to_arrays(pd), fname)
-             for pd, fname in zip(polydatas, filenames)]
-    ctx = multiprocessing.get_context('fork')
-    pool = ctx.Pool(jobs)
+    # Slicer's PythonQt stdin lacks close(), which multiprocessing calls
+    # in each child before its initializer. Children need no console input.
+    import sys
+    stdin = sys.stdin
     try:
-        pool.map(_write_arrays_worker, items)
+        sys.stdin = None
+        pool = multiprocessing.get_context('fork').Pool(
+            jobs, initializer=_initialize_polydata_writer, initargs=(polydatas,))
     finally:
-        pool.close()
-        pool.join()
+        sys.stdin = stdin
+    with pool:
+        pool.map(_write_polydata_index, zip(range(len(polydatas)), filenames))

@@ -514,8 +514,7 @@ def congeal_multisubject_inner_loop(mean, subject, initial_transform, mode, sigm
     register.final_step = step_size[1]
     register.render = render
 
-    # GPU acceleration of the objective function (the nonrigid class
-    # keeps its B-spline transform application on the CPU)
+    # GPU acceleration of transforms and objective functions.
     if use_gpu is not None:
         register.use_gpu = use_gpu
 

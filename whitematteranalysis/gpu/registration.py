@@ -162,13 +162,11 @@ def _squared_point_distances(F, q):
 def _pairwise_probability(F, q, sigmasq):
     """Fuse point arithmetic, preserving PyTorch's point/fiber reductions."""
     if registration_kernel.triton is not None and F.is_cuda:
-        forward, reverse = registration_kernel.squared_distances(F, q)
+        dist_forward, dist_reverse = registration_kernel.mean_squared_distances(F, q)
     else:
-        forward = _squared_point_distances(F, q)
-        reverse = _squared_point_distances(F, q.flip(1))
-    points = F.shape[1]
-    dist_forward = forward.sum(-1) / float(points)
-    dist_reverse = reverse.sum(-1) / float(points)
+        points = float(F.shape[1])
+        dist_forward = _squared_point_distances(F, q).sum(-1) / points
+        dist_reverse = _squared_point_distances(F, q.flip(1)).sum(-1) / points
     dist = torch.minimum(dist_forward, dist_reverse)
     return torch.exp(-dist / sigmasq).sum(-1)
 

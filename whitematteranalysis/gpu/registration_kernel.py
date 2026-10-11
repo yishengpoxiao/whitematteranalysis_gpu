@@ -49,3 +49,62 @@ def squared_distances(fixed, moving):
         _squared_distances[grid](fixed, moving, forward, reverse, shape[1],
                                  P=shape[2], BLOCK=256, enable_fp_fusion=False)
     return forward, reverse
+
+
+if triton is not None:
+    @triton.jit
+    def _point_distance(F, M, fixed, moving, point, mask,
+                        P: tl.constexpr, REVERSE: tl.constexpr):
+        fi = (fixed * P + point) * 3
+        order = P - 1 - point if REVERSE else point
+        mi = (moving * P + order) * 3
+        dx = tl.load(F + fi, mask, other=0.) - tl.load(M + mi, mask, other=0.)
+        dy = tl.load(F + fi + 1, mask, other=0.) - tl.load(M + mi + 1, mask, other=0.)
+        dz = tl.load(F + fi + 2, mask, other=0.) - tl.load(M + mi + 2, mask, other=0.)
+        return (dx * dx + dy * dy) + dz * dz
+
+    @triton.jit
+    def _mean_squared(F, M, Forward, Reverse, NF, COUNT,
+                      P: tl.constexpr, WIDTH: tl.constexpr, STEPS: tl.constexpr,
+                      BLOCK: tl.constexpr):
+        pair = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
+        lane = tl.arange(0, WIDTH)
+        fi = pair[:, None] % NF
+        mi = pair[:, None] // NF
+        point = lane[None, :]
+        mask = pair[:, None] < COUNT
+        # Match Reduce.cuh's lane accumulation then ascending shuffle tree.
+        forward = _point_distance(F, M, fi, mi, point, mask, P, False)
+        reverse = _point_distance(F, M, fi, mi, point, mask, P, True)
+        if P > WIDTH:
+            mask2 = mask & (point + WIDTH < P)
+            forward += _point_distance(F, M, fi, mi, point + WIDTH, mask2, P, False)
+            reverse += _point_distance(F, M, fi, mi, point + WIDTH, mask2, P, True)
+        for step in tl.static_range(0, STEPS):
+            af, bf = tl.split(tl.reshape(forward, (BLOCK, WIDTH // (1 << (step + 1)), 2)))
+            ar, br = tl.split(tl.reshape(reverse, (BLOCK, WIDTH // (1 << (step + 1)), 2)))
+            forward = af + bf
+            reverse = ar + br
+        inv = tl.full((), 1.0 / P, tl.float64)
+        tl.store(Forward + pair, tl.reshape(forward, (BLOCK,)) * inv, pair < COUNT)
+        tl.store(Reverse + pair, tl.reshape(reverse, (BLOCK,)) * inv, pair < COUNT)
+
+
+def mean_squared_distances(fixed, moving):
+    """Fuse point reduction for P<=32, matching PyTorch's CUDA sum order."""
+    import torch
+
+    points = fixed.shape[1]
+    if points > 32:
+        forward, reverse = squared_distances(fixed, moving)
+        return forward.sum(-1) / float(points), reverse.sum(-1) / float(points)
+    shape = (moving.shape[0], fixed.shape[0])
+    forward = torch.empty(shape, dtype=torch.float64, device=fixed.device)
+    reverse = torch.empty_like(forward)
+    steps = points.bit_length() - 1
+    count = forward.numel()
+    with torch.cuda.device(fixed.device):
+        _mean_squared[(triton.cdiv(count, 32),)](
+            fixed, moving, forward, reverse, shape[1], count,
+            P=points, WIDTH=1 << steps, STEPS=steps, BLOCK=32, enable_fp_fusion=False)
+    return forward, reverse

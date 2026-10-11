@@ -601,17 +601,14 @@ def spectral_atlas_label(input_polydata, atlas, number_of_jobs=2,
     sz = atlas.nystrom_polydata.GetNumberOfLines()
 
     if gpu.use_gpu(use_gpu):
-        # fully fused GPU path: the similarity matrix is computed and
-        # exp-kernel applied on the device, then normalized, embedded and
-        # labeled without ever crossing PCIe (only embed comes back)
+        # Stream similarity and embedding blocks; retain only CPU results.
         print(f"<{os.path.basename(__file__)}> Computing rectangular similarity matrix on GPU (fused embedding).")
-        B_gpu = gpu.distance.rectangular_similarity_tensor(
+        blocks = gpu.distance.iter_rectangular_similarity(
             input_polydata, atlas.nystrom_polydata,
             atlas.threshold, atlas.sigma, distance_method=atlas.distance_method,
-            bilateral=atlas.bilateral)
+            bilateral=atlas.bilateral, gpu_float32=gpu_float32)
         embed, cluster_idx, dist, row_sum, b_col_sums = \
-            gpu.linalg.atlas_label_embedding(B_gpu, atlas)
-        del B_gpu
+            gpu.linalg.atlas_label_embedding_blocks(blocks, atlas, number_fibers)
 
     elif gpu.config.cpu_fast_enabled() and gpu.distance.distance_supported(
             atlas.distance_method):
@@ -1217,160 +1214,17 @@ def output_and_quality_control_cluster_atlas(atlas, output_polydata_s, subject_f
         ren.save_views(outdir, verbose=verbose)
         del ren
 
-def mask_all_clusters(inpd, cluster_numbers_s, number_of_clusters, color=None, preserve_point_data=True, preserve_cell_data=False, verbose=True):
-
+def mask_all_clusters(inpd, cluster_numbers_s, number_of_clusters, color=None,
+                      preserve_point_data=True, preserve_cell_data=False, verbose=True):
+    """Split fibers in original order using the vectorized line selector."""
     print(f'<{os.path.basename(__file__)}> Masking all clusters: total ', number_of_clusters)
-
-    inpoints = inpd.GetPoints()
-    inpointdata = inpd.GetPointData()
-    incelldata = inpd.GetCellData()
-
-    # output and temporary objects
-    outpd_list = []
-    outlines_list = []
-    outpoints_list = []
-
-    for c_idx in range(0, number_of_clusters):
-        outpd = vtk.vtkPolyData()
-        outlines = vtk.vtkCellArray()
-        outpoints = vtk.vtkPoints()
-
-        outpd_list.append(outpd)
-        outlines_list.append(outlines)
-        outpoints_list.append(outpoints)
-
-        del outpd
-        del outlines
-        del outpoints
-
-    # check for cell data arrays to keep
-    if preserve_cell_data:
-        if incelldata.GetNumberOfArrays() > 0:
-            cell_data_array_indices = list(range(incelldata.GetNumberOfArrays()))
-            for idx in cell_data_array_indices:
-                array = incelldata.GetArray(idx)
-                dtype = array.GetDataType()
-
-                for c_idx in range(0, number_of_clusters):
-                    if dtype == 10:
-                        out_array = vtk.vtkFloatArray()
-                    elif dtype == 6:
-                        out_array = vtk.vtkIntArray()
-                    elif dtype == 3:
-                        out_array = vtk.vtkUnsignedCharArray()
-                    else:
-                        out_array = vtk.vtkFloatArray()
-                    out_array.SetNumberOfComponents(array.GetNumberOfComponents())
-                    out_array.SetName(array.GetName())
-
-                    if verbose and c_idx == 0:
-                        print("Cell data array found:", array.GetName(), array.GetNumberOfComponents())
-
-                    outpd_list[c_idx].GetCellData().AddArray(out_array)
-
-        else:
-            preserve_cell_data = False
-
-    # check for point data arrays to keep
-    tensor_names = []
-    if preserve_point_data:
-        if inpointdata.GetNumberOfArrays() > 0:
-            point_data_array_indices = list(range(inpointdata.GetNumberOfArrays()))
-            for idx in point_data_array_indices:
-                array = inpointdata.GetArray(idx)
-                for c_idx in range(0, number_of_clusters):
-                    out_array = vtk.vtkFloatArray()
-                    out_array.SetNumberOfComponents(array.GetNumberOfComponents())
-                    out_array.SetName(array.GetName())
-
-                    if verbose and c_idx == 0:
-                        print("Point data array found:", array.GetName(), array.GetNumberOfComponents())
-
-                    outpd_list[c_idx].GetPointData().AddArray(out_array)
-
-                if array.GetNumberOfComponents() == 9:
-                    tensor_names.append(array.GetName())
-        else:
-            preserve_point_data = False
-
-    # Set up scalars and tensors attributes for correct visualization in Slicer.
-    # Slicer works with point data and does not handle cell data well.
-    # This set of changes breaks old internal wma default visualization of cell scalars.
-    # Changes must be propagated through wma so that render is called with the name of the field to visualize.
-    # the new way in wma is like this line, below.
-    # ren = wma.render.render(output_polydata_s, 1000, data_mode="Cell", data_name='EmbeddingColor')
-
-    # For Slicer: First set one of the expected tensor arrays as default for vis
-    tensors_labeled = False
-    for name in tensor_names:
-        if name == "tensors":
-            for c_idx in range(0, number_of_clusters):
-                outpd_list[c_idx].GetPointData().SetTensors(outpd_list[c_idx].GetPointData().GetArray("tensors"))
-            tensors_labeled = True
-        if name == "Tensors":
-            for c_idx in range(0, number_of_clusters):
-                outpd_list[c_idx].GetPointData().SetTensors(outpd_list[c_idx].GetPointData().GetArray("Tensors"))
-            tensors_labeled = True
-        if name == "tensor1":
-            for c_idx in range(0, number_of_clusters):
-                outpd_list[c_idx].GetPointData().SetTensors(outpd_list[c_idx].GetPointData().GetArray("tensor1"))
-            tensors_labeled = True
-        if name == "Tensor1":
-            for c_idx in range(0, number_of_clusters):
-                outpd_list[c_idx].GetPointData().SetTensors(outpd_list[c_idx].GetPointData().GetArray("Tensor1"))
-            tensors_labeled = True
-
-    if not tensors_labeled:
-        if len(tensor_names) > 0:
-            print("Data has unexpected tensor name(s). Unable to set active for visualization:", tensor_names)
-
-    # now set cell data visualization inactive.
-    for c_idx in range(0, number_of_clusters):
-        outpd_list[c_idx].GetCellData().SetActiveScalars(None)
-
-    # loop over lines
-    inpd.GetLines().InitTraversal()
-    for c_idx in range(0, number_of_clusters):
-        outlines_list[c_idx].InitTraversal()
-
-    for lidx in range(0, inpd.GetNumberOfLines()):
-        ptids = vtk.vtkIdList()
-        inpd.GetLines().GetNextCell(ptids)
-
-        if cluster_numbers_s[lidx] >= 0:
-            c_idx = int(cluster_numbers_s[lidx])
-
-            if verbose:
-                if lidx % 100 == 0:
-                    print("Line:", lidx, "/", inpd.GetNumberOfLines(), ", belonging to cluster ", c_idx)
-
-            # get points for each ptid and add to output polydata
-            cellptids = vtk.vtkIdList()
-
-            for pidx in range(0, ptids.GetNumberOfIds()):
-                point = inpoints.GetPoint(ptids.GetId(pidx))
-                idx_ = outpoints_list[c_idx].InsertNextPoint(point)
-                cellptids.InsertNextId(idx_)
-
-                if preserve_point_data:
-                    for idx in point_data_array_indices:
-                        array = inpointdata.GetArray(idx)
-                        outpd_list[c_idx].GetPointData().GetArray(idx).InsertNextTuple(array.GetTuple(ptids.GetId(pidx)))
-
-            outlines_list[c_idx].InsertNextCell(cellptids)
-
-            if preserve_cell_data:
-                for idx in cell_data_array_indices:
-                    array = incelldata.GetArray(idx)
-                    out_array = outpd_list[c_idx].GetCellData().GetArray(idx)
-                    out_array.InsertNextTuple(array.GetTuple(lidx))
-
-    for c_idx in range(0, number_of_clusters):
-        # put data into output polydata
-        outpd_list[c_idx].SetLines(outlines_list[c_idx])
-        outpd_list[c_idx].SetPoints(outpoints_list[c_idx])
-
-        if verbose:
-            print(f"<{os.path.basename(__file__)}> Cluster", c_idx," have fibers ", outpd_list[c_idx].GetNumberOfLines(), "/", inpd.GetNumberOfLines(), ", points ", outpd_list[c_idx].GetNumberOfPoints())
-
-    return outpd_list
+    labels = numpy.asarray(cluster_numbers_s)
+    valid = labels >= 0
+    indices = labels.astype(numpy.int64)
+    if numpy.any(indices[valid] >= number_of_clusters):
+        raise IndexError("Cluster index exceeds number_of_clusters")
+    # The original splitter ignores color and disables active cell scalars.
+    return [filter.mask(inpd, valid & (indices == c),
+                        preserve_point_data=preserve_point_data,
+                        preserve_cell_data=preserve_cell_data, verbose=verbose)
+            for c in range(number_of_clusters)]

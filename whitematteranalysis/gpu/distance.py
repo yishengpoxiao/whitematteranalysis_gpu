@@ -341,6 +341,50 @@ def rectangular_similarity_tensor(input_polydata_n, input_polydata_m, threshold,
     return out.t()
 
 
+def iter_rectangular_similarity(input_polydata_n, input_polydata_m, threshold,
+                               sigma, distance_method='Hausdorff', bilateral=False,
+                               sigmasq=6400, points_per_fiber=15,
+                               gpu_float32=None, tile_rows=None):
+    """Yield (start, (atlas_sample, input_block)) GPU similarity blocks."""
+    device = get_device()
+    dtype = torch.float32 if float32_enabled(gpu_float32) else torch.float64
+    queries = fiber_tensors.polydata_to_numpy(input_polydata_n, points_per_fiber)
+    fixed = fiber_tensors.polydata_to_numpy(input_polydata_m, points_per_fiber)
+    fixed = torch.as_tensor(fixed, dtype=dtype, device=device)
+    requested = tile_rows or config.tile_rows or 2048
+    rows = _choose_tile_rows(len(queries), len(fixed), points_per_fiber,
+                             dtype, device, override=requested)
+    start = 0
+    while start < len(queries):
+        end = min(start + rows, len(queries))
+        try:
+            block = _similarity_tensor_block(queries[start:end], fixed, threshold,
+                                             sigma, distance_method, bilateral, sigmasq)
+        except torch.cuda.OutOfMemoryError:
+            if rows == 1:
+                raise
+            rows = max(1, rows // 2)
+            torch.cuda.empty_cache()
+            continue
+        yield start, block.t()
+        del block
+        start = end
+
+
+def _similarity_tensor_block(queries, fixed, threshold, sigma, method, bilateral, sigmasq):
+    queries = torch.as_tensor(queries, dtype=fixed.dtype, device=fixed.device)
+    distances = _fiber_block_distances(queries, fixed, threshold, method, sigmasq)
+    if bilateral:
+        reflected = queries.clone()
+        reflected[:, :, 0] = -reflected[:, :, 0]
+        other = _fiber_block_distances(reflected, fixed, threshold, method, sigmasq)
+        combine = torch.maximum if method == 'StrictSimilarity' else torch.minimum
+        distances = combine(distances, other)
+    if method != 'StrictSimilarity':
+        distances = torch.exp(-distances / (sigma * sigma))
+    return distances
+
+
 def total_similarity_matrix_strict(X_queries, X_fixed, reflect_mask, threshold,
                                    sigmasq, gpu_float32=None, tile_rows=None):
     """StrictSimilarity matrix used by laterality.
