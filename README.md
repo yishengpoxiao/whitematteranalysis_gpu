@@ -1,12 +1,71 @@
 whitematteranalysis
 ===================
 
-[![test, package](https://github.com/SlicerDMRI/whitematteranalysis/actions/workflows/test_package.yaml/badge.svg?branch=master)](https://github.com/SlicerDMRI/whitematteranalysis/actions/workflows/test_package.yaml?query=branch%3Amaster)
-[![Documentation Status](https://readthedocs.org/projects/whitematteranalysis/badge/?version=latest)](https://whitematteranalysis.readthedocs.io/en/latest/?badge=latest)
-
 # Synopsis
 
 WhiteMatterAnalysis (WMA) provides fiber clustering and tractography analysis tools.
+This fork adds CUDA GPU acceleration, a vectorized CPU backend, and a six-module
+3D Slicer extension. It is based on the [upstream WMA project](https://github.com/SlicerDMRI/whitematteranalysis).
+
+# GPU and 3D Slicer quick start
+
+## Python / command line
+
+Install this fork from a local checkout:
+
+```shell
+git clone https://github.com/yishengpoxiao/whitematteranalysis_gpu.git
+cd whitematteranalysis_gpu
+python -m pip install .
+```
+
+The existing `requirements.txt` supplies the base dependencies used by `setup.py`.
+CPU acceleration works without PyTorch. For the validated CUDA 12.1 / PyTorch 2.4.1
+combination, optionally install the dated GPU requirements in the same Python environment:
+
+```shell
+python -m pip install -r requirements-gpu-2026-10-11.txt
+python -c "import torch; print(torch.__version__, torch.cuda.is_available())"
+```
+
+This optional profile targets Linux/Windows x86_64 and Python 3.8–3.12 and uses the
+[official PyTorch CUDA 12.1 index](https://docs.pytorch.org/get-started/previous-versions/#v241).
+GPU execution requires a working NVIDIA GPU/driver. Triton kernels are used when
+Triton is available; the torch CUDA path remains available without Triton.
+Linux / Python 3.8 and Slicer 5.2.2 / Python 3.9 were tested; Windows has not been tested.
+
+| Setting | Behavior |
+|---|---|
+| `WMA_GPU=auto` (default) | Use available CUDA; otherwise use accelerated CPU |
+| `WMA_GPU=off` | Use CPU |
+| `WMA_GPU=off`, `WMA_CPU_FAST=0` | Use the original per-fiber CPU implementation |
+| `WMA_GPU_DEVICES=0,1` | Select visible CUDA device indices for supported multi-GPU operations |
+| `WMA_GPU_FLOAT32=1` | Opt into float32; default is float64 |
+
+These environment variables apply to the Python/CLI backend. Slicer pages provide
+their own Backend selection. Some CLI tools also expose `-gpu auto|on|off`,
+`-gpu_float32`, and `-gpu_devices`; check the individual tool's `--help`.
+See [GPU development and validation records](doc/gpu/) for tested behavior and measurements.
+
+## 3D Slicer extension
+
+Install [WMAGPU-Slicer-5.2-2026-10-11-83ceee0.zip](slicer/WMAGPU/dist/WMAGPU-Slicer-5.2-2026-10-11-83ceee0.zip)
+through **Extensions Manager → Install from file**, restart, and open
+**Diffusion → WMA GPU**. If an older WMAGPU extension is already installed, remove
+that version before installing this archive. Remove old WMA additional module paths
+when switching to the extension to avoid duplicate module names.
+
+The extension provides Pipeline, atlas registration, groupwise registration, atlas
+building, atlas labeling, and cluster merge/MRML export. It bundles WMA and its pure
+Python helpers; CPU mode requires no separate WMA or PyTorch installation.
+GPU setup is optional: enable **Allow downloading and installing CUDA PyTorch into Slicer**,
+click **Check / Install PyTorch**, and restart after completion. This installs into
+Slicer's Python; installing PyTorch in Conda does not enable it in Slicer.
+
+The archive uses the Slicer 5.2 layout and was tested on Linux with Slicer 5.2.2.
+Other Slicer versions require repackaging and validation. GUI registration currently
+supports affine mode; full ORG anatomical Pipeline validation requires actual atlas data.
+See [extension installation, dependencies, packaging, and tests](slicer/WMAGPU/README.md).
 
 # WMA Installation and Usage
 ## 1. Install Python 3:
@@ -20,7 +79,7 @@ Miniconda is a nice option because it includes pip, setuptools, and all library 
 The following command will use pip to install whitematteranalysis from this source repository and all library dependencies:
 
 ```shell
-$ pip install git+https://github.com/SlicerDMRI/whitematteranalysis.git
+$ python -m pip install git+https://github.com/yishengpoxiao/whitematteranalysis_gpu.git
 ```
 
 Note: On macOS, to be able to use `pip`, `X-code` needs to be installed using `$ xcode-select --install`.
@@ -29,8 +88,9 @@ Run `$ wm_quality_control_tractography.py --help` to test if the installation is
 
 ## 3. Documentation
 
-The `whitematteranalysis` package documentation can be found at
+The upstream `whitematteranalysis` documentation can be found at
 https://whitematteranalysis.readthedocs.io/en/latest/.
+GPU and Slicer extension behavior specific to this fork is documented above.
 
 * A master shell script `wm_apply_ORG_atlas_to_subject.sh` (see code [here](https://github.com/SlicerDMRI/whitematteranalysis/blob/73a7948751f49d9fda8ec84fb5caeecaeeb92621/bin/wm_apply_ORG_atlas_to_subject.sh#L1-L40)) is provided to apply an anatomically curated white matter atlas ([the ORG atlas](https://dmri.slicer.org/atlases/)), along with the computation tools provided in whitematteranalysis, to perform subject-specific tractography parcellation.
 
@@ -44,7 +104,7 @@ $ wm_apply_ORG_atlas_to_subject.sh \
   -m /Applications/Slicer5.2.2.app/Contents/Extensions-31382/SlicerDMRI/lib/Slicer-5.2/cli-modules/FiberTractMeasurements
 ```
 
-* A step-by-step tutorial to explain the detailed computational process within the pipeline is provided [here](https://github.com/SlicerDMRI/whitematteranalysis/blob/master/doc/subject-specific-tractography-parcellation.md).
+* A step-by-step tutorial to explain the detailed computational process within the pipeline is provided [here](doc/subject-specific-tractography-parcellation.md).
 
 * The names of the anatomical bundles WMA extracts can be found in the [bundles](doc/bundles.md) page.
 
