@@ -1,5 +1,0 @@
-# Optional CUDA dependencies, installed after the base WMA package.
-# Linux/Windows x86_64, Python 3.8-3.12; requires a compatible NVIDIA driver.
-# Keep requirements.txt as the CPU/base dependency profile.
---index-url https://download.pytorch.org/whl/cu121
-torch==2.4.1+cu121
