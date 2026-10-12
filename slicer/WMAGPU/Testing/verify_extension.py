@@ -9,7 +9,7 @@ import slicer
 try:
     root = Path(os.environ['WMA_EXTENSION_INSTALL_ROOT'])/'WMAGPU'
     names = ['WMAPipeline', 'WMARegisterToAtlas', 'WMAGroupRegister',
-             'WMAAtlasBuilder', 'WMALabelFromAtlas', 'WMAMergeMRML']
+             'WMAAtlasBuilder', 'WMAMergeMRML']
     widgets = []
     for name in names:
         module = slicer.util.getModule(name)

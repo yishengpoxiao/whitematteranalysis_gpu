@@ -4,7 +4,7 @@ whitematteranalysis
 # Synopsis
 
 WhiteMatterAnalysis (WMA) provides fiber clustering and tractography analysis tools.
-This fork adds CUDA GPU acceleration, a vectorized CPU backend, and a six-module
+This fork adds CUDA GPU acceleration, a vectorized CPU backend, and a five-module
 3D Slicer extension. It is based on the [upstream WMA project](https://github.com/SlicerDMRI/whitematteranalysis).
 
 # GPU and 3D Slicer quick start
@@ -57,14 +57,15 @@ See [GPU development and validation records](doc/gpu/) for tested behavior and m
 
 ## 3D Slicer extension
 
-Install [WMAGPU-Slicer-5.2-2026-10-12-english.zip](slicer/WMAGPU/dist/WMAGPU-Slicer-5.2-2026-10-12-english.zip)
+Install [WMAGPU-Slicer-5.2-2026-10-12-pipeline.zip](slicer/WMAGPU/dist/WMAGPU-Slicer-5.2-2026-10-12-pipeline.zip)
 through **Extensions Manager → Install from file**, restart, and open
 **Diffusion → WMA GPU**. If an older WMAGPU extension is already installed, remove
 that version before installing this archive. Remove old WMA additional module paths
 when switching to the extension to avoid duplicate module names.
 
 The extension provides Pipeline, atlas registration, groupwise registration, atlas
-building, atlas labeling, and cluster merge/MRML export. It bundles WMA and its pure
+building, and cluster merge/MRML export. Pipeline includes atlas labeling; uncheck
+registration when the input tractography is already registered. It bundles WMA and its pure
 Python helpers; CPU mode requires no separate WMA or PyTorch installation.
 GPU setup is optional: enable **Allow downloading and installing CUDA PyTorch into Slicer**,
 click **Check / Install PyTorch**, and restart after completion. This installs into

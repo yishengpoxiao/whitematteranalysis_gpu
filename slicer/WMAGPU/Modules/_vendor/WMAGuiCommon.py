@@ -138,35 +138,44 @@ def add_tractography_node(name):
 
 
 def show_clusters_in_scene(pd_c_list, base_name="cluster",
-                           clear_previous=True):
-    """Add one colored tractography/model node per cluster to the
-    Slicer scene (FiberBundle when SlicerDMRI provides it)."""
-
+                           clear_previous=True, names=None, visible=True,
+                           progress_callback=None):
+    """Batch scene changes and skip empty tracts to avoid repeated renders."""
     import colorsys
-
     import slicer
 
-    if clear_previous:
-        for cls in ('vtkMRMLModelNode', 'vtkMRMLFiberBundleNode'):
-            try:
-                for node in slicer.util.getNodesByClass(cls):
-                    if node.GetName().startswith(base_name + "_"):
-                        slicer.mrmlScene.RemoveNode(node)
-            except Exception:
-                pass
-
+    scene = slicer.mrmlScene
     nodes = []
-    for c, pd_c in enumerate(pd_c_list):
-        name = "%s_%05d" % (base_name, c + 1)
-        node = add_tractography_node(name)
-        node.SetAndObservePolyData(pd_c)
-        node.CreateDefaultDisplayNodes()
-        display = node.GetDisplayNode()
-        if display is not None:
-            h = (c * 0.61803398875) % 1.0
-            r, g, b = colorsys.hsv_to_rgb(h, 0.85, 1.0)
-            display.SetColor(r, g, b)
-        nodes.append(node)
+    slicer.app.pauseRender()
+    scene.StartState(scene.BatchProcessState)
+    try:
+        if clear_previous:
+            for cls in ('vtkMRMLModelNode', 'vtkMRMLFiberBundleNode'):
+                for node in slicer.util.getNodesByClass(cls):
+                    if node.GetAttribute('WMAGPU.ResultGroup') == base_name:
+                        displays = [node.GetNthDisplayNode(i)
+                                    for i in range(node.GetNumberOfDisplayNodes())]
+                        for display in displays:
+                            scene.RemoveNode(display)
+                        scene.RemoveNode(node)
+        for c, pd_c in enumerate(pd_c_list):
+            if pd_c.GetNumberOfLines() == 0:
+                continue
+            name = names[c] if names is not None else "%s_%05d" % (base_name, c + 1)
+            node = add_tractography_node(name)
+            node.SetAttribute('WMAGPU.ResultGroup', base_name)
+            node.SetDisplayVisibility(False)
+            node.SetAndObservePolyData(pd_c)
+            display = node.GetDisplayNode()
+            display.SetScalarVisibility(False)
+            display.SetColor(*colorsys.hsv_to_rgb((c * 0.61803398875) % 1.0, 0.85, 1.0))
+            display.SetVisibility(visible)
+            nodes.append(node)
+            if progress_callback and len(nodes) % 25 == 0:
+                progress_callback("Adding result nodes: %d/%d" % (c + 1, len(pd_c_list)))
+    finally:
+        scene.EndState(scene.BatchProcessState)
+        slicer.app.resumeRender()
     return nodes
 
 

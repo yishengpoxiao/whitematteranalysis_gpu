@@ -8,7 +8,7 @@ import slicer
 try:
     widgets = []
     for name in ('WMAPipeline', 'WMARegisterToAtlas', 'WMAGroupRegister',
-                 'WMAAtlasBuilder', 'WMALabelFromAtlas'):
+                 'WMAAtlasBuilder'):
         widget = slicer.util.getModule(name).widgetRepresentation().self()
         installer = widget.torchInstaller
         assert not installer.allow.checked and not installer.button.enabled

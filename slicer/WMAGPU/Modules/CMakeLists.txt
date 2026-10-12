@@ -1,4 +1,4 @@
-foreach(module WMAPipeline WMARegisterToAtlas WMAGroupRegister WMAAtlasBuilder WMALabelFromAtlas WMAMergeMRML)
+foreach(module WMAPipeline WMARegisterToAtlas WMAGroupRegister WMAAtlasBuilder WMAMergeMRML)
   slicerMacroBuildScriptedModule(NAME ${module} SCRIPTS ${module}.py)
 endforeach()
 install(DIRECTORY _vendor DESTINATION ${Slicer_INSTALL_QTSCRIPTEDMODULES_LIB_DIR}

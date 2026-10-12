@@ -39,8 +39,7 @@ class WMAAtlasBuilder(ScriptedLoadableModule):
 Build a WMA tract atlas from a directory of registered subject
 tractographies (GPU/CPU accelerated spectral clustering with
 outlier rejection). The resulting directory (containing atlas.p,
-atlas.vtp and cluster files) can be used by WMA Label From Atlas and
-WMA Pipeline.
+atlas.vtp and cluster files) can be used by WMA Pipeline.
 """
 
 
@@ -145,8 +144,7 @@ class WMAAtlasBuilderWidget(ScriptedLoadableModuleWidget):
                                progress_callback=lambda t, p: common.status(self, t, p))
             common.status(self,
                           "Atlas built: %d subjects, %d clusters, %d fibers.\n"
-                          "Use this atlas directory in WMA Label From Atlas / "
-                          "WMA Pipeline:\n%s"
+                          "Use this atlas directory in WMA Pipeline:\n%s"
                           % (result['n_subjects'], result['cluster_count'],
                              result['n_fibers'], result['atlas_directory']), 100)
         except Exception:

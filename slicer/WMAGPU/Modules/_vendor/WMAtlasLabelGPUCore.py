@@ -620,7 +620,7 @@ def assess_hemisphere_location(cluster_polydata, hemisphere_percent_threshold=0.
 
 
 def separate_clusters_by_hemisphere(pd_c_list, hemisphere_percent_threshold=0.95,
-                                    output_directory=None):
+                                    output_directory=None, progress_callback=None):
     """Split every cluster into its left / right / commissural parts
     (wm_separate_clusters_by_hemisphere.py, in memory).
 
@@ -647,6 +647,8 @@ def separate_clusters_by_hemisphere(pd_c_list, hemisphere_percent_threshold=0.95
     result = {'tracts_left_hemisphere': [], 'tracts_right_hemisphere': [],
               'tracts_commissural': []}
     for c, pd_c in enumerate(pd_c_list):
+        if progress_callback and c % 25 == 0:
+            progress_callback("Separating hemispheres: cluster %d/%d" % (c + 1, len(pd_c_list)))
         location = assess_hemisphere_location(pd_c, hemisphere_percent_threshold)
         fname_base = 'cluster_%05d.vtp' % (c + 1)
         for side, value in (('tracts_left_hemisphere', 1),
@@ -676,7 +678,8 @@ def find_anatomical_tracts_mrml(atlas_directory):
 
 
 def append_clusters_to_anatomical_tracts(pd_c_list, atlas_mrml_files,
-                                         separated, output_directory=None):
+                                         separated, output_directory=None,
+                                         progress_callback=None):
     """Merge the subject's (hemisphere-separated) clusters into the
     anatomically named tracts of the ORG atlas
     (wm_append_clusters_to_anatomical_tracts.py, in memory).
@@ -701,7 +704,10 @@ def append_clusters_to_anatomical_tracts(pd_c_list, atlas_mrml_files,
         return int(fname_base[8:13])
 
     tracts = []
-    for mrml_path in atlas_mrml_files:
+    for i, mrml_path in enumerate(atlas_mrml_files):
+        if progress_callback:
+            progress_callback("Mapping anatomical tract %d/%d: %s" % (
+                i + 1, len(atlas_mrml_files), os.path.basename(mrml_path)))
         tract = os.path.splitext(os.path.basename(mrml_path))[0]
         member_numbers = []
         with open(mrml_path) as f:

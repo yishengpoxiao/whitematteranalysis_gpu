@@ -6,7 +6,7 @@ and xlrd. No separate WMA installation is required; atlas data must be supplied.
 Sources are in `slicer/WMAGPU/Modules/`, release archives in `slicer/WMAGPU/dist/`,
 packaging tools in `tools/`, and validation scripts in `Testing/`.
 The current English-language release is
-`dist/WMAGPU-Slicer-5.2-2026-10-12-english.zip`, including optional PyTorch setup.
+`dist/WMAGPU-Slicer-5.2-2026-10-12-pipeline.zip`, including optional PyTorch setup.
 
 The local legacy path `/data/yijie/wma-GPU/slicer` is a symlink to `Modules/` for
 existing Slicer Additional module paths. Obsolete source copies, `.sx` archives,
@@ -27,8 +27,17 @@ it does not depend on this local symlink.
 | WMA Register to Atlas | Affine subject-to-atlas registration |
 | WMA Groupwise Registration | Population affine registration and registration atlas output |
 | WMA Atlas Builder | Atlas construction through multisubject spectral clustering |
-| WMA Label From Atlas | Labeling, optional outlier removal, and anatomical tract mapping |
 | WMA Merge & MRML | Cluster merging and scene.mrml export |
+
+For labeling already registered tractography, use **WMA Pipeline** and uncheck
+**Register subject to atlas (affine)**. Outlier removal and anatomical tract mapping
+remain independently optional. Results display as anatomically named tracts when
+mappings are available, otherwise as one overview node. **Individual clusters**
+loads nonempty clusters hidden so you can enable selected tracts in Data;
+**Save only** avoids scene loading. Scene updates are batched, and saving finishes
+before visualization. Pipeline saves VTP files only; it does not export MRML scenes.
+Hemisphere mapping runs in atlas coordinates before returning results to subject
+space. The separate WMA Label From Atlas page has been removed.
 
 Select the ORG atlas parent directory (for example `/data/software/ORG-Atlases`)
 or its `ORG-800FC-100HCP` labeling folder. Registration automatically uses
@@ -57,7 +66,7 @@ Float64 is the default; random sampling and classification remain on CPU.
 
 ## Optional PyTorch installation
 
-Below Backend on the five computation pages, enable
+Below Backend on the four computation pages, enable
 **Allow downloading and installing CUDA PyTorch into Slicer**, then click
 **Check / Install PyTorch**. The extension checks CUDA in a background process
 using Slicer's PythonSlicer. Existing working CUDA PyTorch is left intact;
@@ -108,7 +117,15 @@ Extensions Index.
 
 ## Validation
 
-Slicer 5.2.2 on Linux was used to verify Extension Manager installation, all six
+`Testing/verify_pipeline.py` exercises the five module widgets, labeling without
+registration, anatomical mapping before the inverse transform, output files without
+MRML export, result replacement without deleting unrelated nodes, all display
+modes, empty cluster omission, and batched creation/removal of 800 hidden nodes.
+It uses a bounded synthetic subject and substitutes registration and labeling;
+hemisphere mapping, transforms, file writing, and Slicer scene operations run normally.
+
+
+Slicer 5.2.2 on Linux was used to verify Extension Manager installation, the five current
 modules, node selection without SlicerDMRI, CPU/GPU labeling agreement, affine
 registration, parallel writing, and MRML export. Synthetic tests also cover
 cluster numbering through atlas construction/reload/labeling, groupwise output,

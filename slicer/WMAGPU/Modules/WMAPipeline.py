@@ -108,7 +108,14 @@ class WMAPipelineWidget(ScriptedLoadableModuleWidget):
         self.nativeSpaceCheckBox.checked = True
         form.addRow("", self.nativeSpaceCheckBox)
 
-        self.saveCheckBox = qt.QCheckBox("Save cluster files and registered tractography")
+        self.visualizationComboBox = qt.QComboBox()
+        self.visualizationComboBox.addItems([
+            "Anatomical tracts (otherwise one cluster overview)",
+            "Individual clusters (initially hidden)",
+            "Save only (no scene nodes)"])
+        form.addRow("Result display:", self.visualizationComboBox)
+
+        self.saveCheckBox = qt.QCheckBox("Save cluster files and tractography")
         self.saveCheckBox.checked = True
         form.addRow("", self.saveCheckBox)
 
@@ -208,43 +215,71 @@ class WMAPipelineWidget(ScriptedLoadableModuleWidget):
                 result['cluster_count'])
 
             anatomical_tracts = None
-            if transform is not None and native_space:
-                pd_c_list = [_CORE.apply_transform_to_polydata(
-                    p, transform, inverse=True) for p in pd_c_list]
-
             if do_anatomical:
                 mrml_files = _CORE.find_anatomical_tracts_mrml(self.atlasDirectory)
                 if mrml_files is None:
                     common.status(self, "Anatomical tracts skipped: no T_*.mrml files.")
                 else:
-                    anat_dir = (os.path.join(self.outputDirectory, 'anatomical_tracts')
-                                if do_save else None)
+                    common.status(self, "Mapping anatomical tracts...", 75)
+                    callback = lambda text: common.status(self, text)
                     sep = _CORE.separate_clusters_by_hemisphere(
-                        pd_c_list, output_directory=anat_dir)
+                        pd_c_list, progress_callback=callback)
                     anatomical_tracts = _CORE.append_clusters_to_anatomical_tracts(
-                        pd_c_list, mrml_files, sep, output_directory=anat_dir)
+                        pd_c_list, mrml_files, sep, progress_callback=callback)
                     common.status(self, "Mapped into %d anatomical tracts."
                                   % len(anatomical_tracts))
 
-            common.show_clusters_in_scene(pd_c_list)
+            # Hemisphere mapping uses atlas coordinates; transform outputs afterward.
+            if transform is not None and native_space:
+                common.status(self, "Returning results to subject space...", 80)
+                pd_c_list = [_CORE.apply_transform_to_polydata(
+                    p, transform, inverse=True) for p in pd_c_list]
+                if anatomical_tracts:
+                    anatomical_tracts = [(name, _CORE.apply_transform_to_polydata(
+                        pd, transform, inverse=True)) for name, pd in anatomical_tracts]
 
             if do_save:
+                common.status(self, "Saving cluster files...", 85)
                 outdir = self.outputDirectory
                 fnames = common.save_clusters_parallel(pd_c_list, outdir)
                 wma.io.write_polydata(
                     subject_pd, os.path.join(outdir, 'registered_subject.vtp'))
                 if anatomical_tracts:
+                    common.status(self, "Saving anatomical tracts...", 90)
                     anat_dir = os.path.join(outdir, 'anatomical_tracts')
                     if not os.path.isdir(anat_dir):
                         os.makedirs(anat_dir)
                     for tract_name, pd_tract in anatomical_tracts:
-                        wma.io.write_polydata(
-                            pd_tract, os.path.join(anat_dir, tract_name + '.vtp'))
+                        filename = os.path.join(anat_dir, tract_name + '.vtp')
+                        wma.io.write_polydata(pd_tract, filename)
                 common.status(self, "Saved %d cluster files and registered "
                               "tractography." % len(fnames))
 
+            display_mode = self.visualizationComboBox.currentIndex
+            if display_mode != 2:
+                common.status(self, "Preparing result visualization...", 95)
+                callback = lambda text: common.status(self, text)
+                if display_mode == 1:
+                    common.show_clusters_in_scene(
+                        pd_c_list, base_name="pipeline", visible=False,
+                        names=["cluster_%05d" % (i + 1) for i in range(len(pd_c_list))],
+                                                  progress_callback=callback)
+                    common.status(self, "Clusters loaded hidden; enable selected tracts in Data.")
+                elif anatomical_tracts:
+                    common.show_clusters_in_scene(
+                        [pd for name, pd in anatomical_tracts], base_name="pipeline",
+                        names=[name for name, pd in anatomical_tracts],
+                        progress_callback=callback)
+                else:
+                    overview = result['output_polydata']
+                    if transform is not None and native_space:
+                        overview = _CORE.apply_transform_to_polydata(overview, transform, inverse=True)
+                    common.show_clusters_in_scene([overview], base_name="pipeline",
+                                                  names=["WMA cluster overview"])
+                slicer.util.resetThreeDViews()
+
             common.status(self, "PIPELINE DONE: %d fibers, %d clusters, backend %s."
-                          % (result['n_fibers'], result['cluster_count'],
+                          % (result['output_polydata'].GetNumberOfLines(), result['cluster_count'],
                              result['backend_name']), 100)
         except Exception:
             import traceback
