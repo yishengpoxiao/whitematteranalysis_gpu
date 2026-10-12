@@ -33,8 +33,8 @@ python -c "import torch; print(torch.__version__, torch.cuda.is_available())"
 `setup.py` reads `requirements_cpu.txt`, so `python -m pip install .` installs
 the CPU/base profile by default. The GPU profile includes it using `-r` and adds
 the official CUDA wheel index alongside the base package index. The older
-`requirements.txt` and `requirements-gpu-2026-10-11.txt` remain unchanged as
-preserved dependency snapshots; use the two profiles above for current installation.
+`requirements.txt` remains as a preserved dependency snapshot; use the two
+profiles above for current installation.
 
 The GPU profile targets Linux/Windows x86_64 and Python 3.8–3.12 and uses the
 [official PyTorch CUDA 12.1 index](https://docs.pytorch.org/get-started/previous-versions/#v241).
