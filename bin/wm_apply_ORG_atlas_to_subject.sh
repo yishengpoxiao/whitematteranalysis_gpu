@@ -154,10 +154,10 @@ else
 	fi
 fi
 
-# Get CaseID 
-fn=$(basename -- $InputTractography)
-ext=${fn#*.}
-caseID=${fn//.$ext/}
+# Get CaseID. Remove only the final extension so dots in subject file names
+# remain part of the ID and agree with wm_register_to_atlas_new.py.
+fn=$(basename -- "$InputTractography")
+caseID=${fn%.*}
 
 reportMappingParameters
 
@@ -210,7 +210,7 @@ if [ "$TfmFile" ]; then
       wm_harden_transform.py -t "$TfmFile" \
         "$InTractographyDirname" "$OutTfmTractography" "$SlicerPath"
     else
-      xvfb-run wm_harden_transform.py -t "$TfmFile" \
+      xvfb-run -a wm_harden_transform.py -t "$TfmFile" \
         "$InTractographyDirname" "$OutTfmTractography" "$SlicerPath"
     fi
     echo ""
@@ -259,9 +259,8 @@ if [ ! -f $RegTractography ]; then
 fi
 
 # Get the case ID for fiber clustering
-fn=$(basename -- $RegTractography)
-ext=${fn#*.}
-FCcaseID=${fn//.$ext/}
+fn=$(basename -- "$RegTractography")
+FCcaseID=${fn%.*}
 
 echo "<wm_apply_ORG_atlas_to_subject> Fiber clustering for whole-brain 800 fiber cluster parcellation."
 FiberClusteringInitialFolder=$OutputCaseFolder/FiberClustering/InitialClusters
@@ -281,11 +280,11 @@ if [ $numfiles -lt 800 ]; then
 	echo ""
 	exit
 fi
- 
+
 echo "<wm_apply_ORG_atlas_to_subject> Outlier fiber removal."
 FiberClusteringOutlierRemFolder=$OutputCaseFolder/FiberClustering/OutlierRemovedClusters
 if [ ! -f $FiberClusteringOutlierRemFolder/${FCcaseID}_outlier_removed/cluster_00800.vtp ]; then
-	wm_cluster_remove_outliers.py -j $NumThreads \
+	wm_cluster_remove_outliers.py -j 80 \
 		$FiberClusteringInitialFolder/$FCcaseID $FCAtlasFolder $FiberClusteringOutlierRemFolder
 else
 	echo " - outlier fiber removal has been done."
@@ -329,7 +328,7 @@ if [ "$RegMode" == "rig" ]; then
 			wm_harden_transform.py -i -t $tfm \
 				$FiberClusteringOutlierRemFolder/${FCcaseID}_outlier_removed $FiberClustersInTractographySpace "$SlicerPath"
 		else
-			xvfb-run wm_harden_transform.py -i -t $tfm \
+			xvfb-run -a wm_harden_transform.py -i -t $tfm \
 				$FiberClusteringOutlierRemFolder/${FCcaseID}_outlier_removed $FiberClustersInTractographySpace "$SlicerPath"
 		fi
 	else
@@ -344,7 +343,7 @@ elif [ "$RegMode" == "nonrig" ]; then
 			wm_harden_transform.py -i -t $tfm \
 				$FiberClusteringOutlierRemFolder/${FCcaseID}_outlier_removed $FiberClustersInTractographySpace/tmp "$SlicerPath"
 		else
-			xvfb-run wm_harden_transform.py -i -t $tfm \
+			xvfb-run -a wm_harden_transform.py -i -t $tfm \
 				$FiberClusteringOutlierRemFolder/${FCcaseID}_outlier_removed $FiberClustersInTractographySpace/tmp "$SlicerPath"
 		fi
 	else
@@ -358,7 +357,7 @@ elif [ "$RegMode" == "nonrig" ]; then
 			wm_harden_transform.py -i -t $tfm \
 				$FiberClustersInTractographySpace/tmp $FiberClustersInTractographySpace "$SlicerPath"
 		else
-			xvfb-run wm_harden_transform.py -i -t $tfm \
+			xvfb-run -a wm_harden_transform.py -i -t $tfm \
 				$FiberClustersInTractographySpace/tmp $FiberClustersInTractographySpace "$SlicerPath"
 		fi
 	else
@@ -416,7 +415,7 @@ if [ "$TfmFile" ]; then
         wm_harden_transform.py -i -t "$TfmFile" \
           "$ClusterDirname" "$OutInvTfmTractographyDirname" "$SlicerPath"
       else
-        xvfb-run wm_harden_transform.py -i -t "$TfmFile" \
+        xvfb-run -a wm_harden_transform.py -i -t "$TfmFile" \
           "$ClusterDirname" "$OutInvTfmTractographyDirname" "$SlicerPath"
       fi
     done

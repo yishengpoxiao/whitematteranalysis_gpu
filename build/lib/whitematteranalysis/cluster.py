@@ -33,6 +33,7 @@ from . import filter
 from . import render
 from . import io
 from . import mrml
+from . import gpu
 
 from pprint import pprint
 
@@ -187,7 +188,8 @@ def spectral(input_polydata, number_of_clusters=200,
              landmarks=None, distance_method='Mean', normalized_cuts=True,
              outlier_std_threshold = 2.0,
              pos_def_approx=True,
-             bilateral=False):
+             bilateral=False,
+             use_gpu=None, gpu_float32=None):
 
     """ Spectral clustering based on pairwise fiber affinity matrix.
 
@@ -258,10 +260,12 @@ def spectral(input_polydata, number_of_clusters=200,
         # Calculate fiber similarities
         A = \
             _pairwise_similarity_matrix(polydata_m, threshold,
-                                        sigma, number_of_jobs, landmarks_m, distance_method, bilateral)
+                                        sigma, number_of_jobs, landmarks_m, distance_method, bilateral,
+                                        use_gpu=use_gpu, gpu_float32=gpu_float32)
         B = \
             _rectangular_similarity_matrix(polydata_n, polydata_m, threshold,
-                                           sigma, number_of_jobs, landmarks_n, landmarks_m, distance_method, bilateral)
+                                           sigma, number_of_jobs, landmarks_n, landmarks_m, distance_method, bilateral,
+                                           use_gpu=use_gpu, gpu_float32=gpu_float32)
 
         # sanity check
         print(f"<{os.path.basename(__file__)}> Range of values in A:", numpy.min(A), numpy.max(A))
@@ -271,7 +275,8 @@ def spectral(input_polydata, number_of_clusters=200,
         # Calculate all fiber similarities
         A = \
             _pairwise_similarity_matrix(input_polydata, threshold,
-                                    sigma, number_of_jobs, landmarks, distance_method, bilateral)
+                                    sigma, number_of_jobs, landmarks, distance_method, bilateral,
+                                    use_gpu=use_gpu, gpu_float32=gpu_float32)
 
         atlas.nystrom_polydata = input_polydata
         # sanity check
@@ -312,10 +317,10 @@ def spectral(input_polydata, number_of_clusters=200,
                     
     # Ensure that A is positive definite.
     if pos_def_approx:
-        e_val, e_vec = numpy.linalg.eigh(A)
+        e_val, e_vec = gpu.linalg.eigh(A)
         print(f"<{os.path.basename(__file__)}> Eigenvalue range of A:", e_val[0], e_val[-1])
         A2 = nearPSD(A)
-        e_val, e_vec = numpy.linalg.eigh(A2)
+        e_val, e_vec = gpu.linalg.eigh(A2)
         print(f"<{os.path.basename(__file__)}> Eigenvalue range of nearest PSD matrix to A:", e_val[0], e_val[-1])
         testval = numpy.max(A-A2) 
         if not testval == 0.0:
@@ -366,8 +371,11 @@ def spectral(input_polydata, number_of_clusters=200,
             #del test
             
             # row sum estimate for current B part of the matrix
-            row_sum_2 = numpy.sum(B, axis=0) + \
-                numpy.dot(atlas.row_sum_matrix, B)
+            if gpu.use_gpu(use_gpu):
+                row_sum_2 = gpu.linalg.nystrom_row_sum_2(B, atlas.row_sum_matrix)
+            else:
+                row_sum_2 = numpy.sum(B, axis=0) + \
+                    numpy.dot(atlas.row_sum_matrix, B)
             print(f"<{os.path.basename(__file__)}> Row sum check (min/max, should be > 0) A:", numpy.min(atlas.row_sum_1), numpy.median(atlas.row_sum_1), numpy.max(atlas.row_sum_1),  "B:", numpy.min(row_sum_2), numpy.median(row_sum_2), numpy.max(row_sum_2))
 
             # reject outliers in B
@@ -434,7 +442,7 @@ def spectral(input_polydata, number_of_clusters=200,
 
     # 3) Compute eigenvectors for use in spectral embedding
     print(f'<{os.path.basename(__file__)}> Calculating eigenvectors of similarity matrix A...')
-    atlas.e_val, atlas.e_vec = numpy.linalg.eigh(A)
+    atlas.e_val, atlas.e_vec = gpu.linalg.eigh(A)
     print(f'<{os.path.basename(__file__)}> Done calculating eigenvectors.')
     print(f"<{os.path.basename(__file__)}> Eigenvalue range:", atlas.e_val[0], atlas.e_val[-1])
     # Check how well our chosen number of eigenvectors models the data
@@ -458,11 +466,15 @@ def spectral(input_polydata, number_of_clusters=200,
         # than sqrt of row sum, as in this code (below).
 
         # matlab was: % project onto eigenvectors of A:
-        # % v' = [v ; B'*v*d^-1 
+        # % v' = [v ; B'*v*d^-1
         # V = [atlas.eigenvectA; B'*atlas.eigenvectA*(diag(1./diag(atlas.eigenvalA)))];
-        V = numpy.concatenate((atlas.e_vec, \
-                                  numpy.dot(numpy.dot(B.T, atlas.e_vec), \
-                                                numpy.diag(numpy.divide(1.0, atlas.e_val)))))
+        if gpu.use_gpu(use_gpu):
+            V2 = gpu.linalg.nystrom_embed_B(B, atlas.e_vec, atlas.e_val)
+            V = numpy.concatenate((atlas.e_vec, V2))
+        else:
+            V = numpy.concatenate((atlas.e_vec, \
+                                      numpy.dot(numpy.dot(B.T, atlas.e_vec), \
+                                                    numpy.diag(numpy.divide(1.0, atlas.e_val)))))
 
         # normalize estimated eigenvectors to have length of one
         # matlab was:
@@ -577,7 +589,8 @@ def view_cluster_number(input_polydata, cluster_number, cluster_indices=None):
 
     return ren
 
-def spectral_atlas_label(input_polydata, atlas, number_of_jobs=2):
+def spectral_atlas_label(input_polydata, atlas, number_of_jobs=2,
+                         use_gpu=None, gpu_float32=None):
     """ Use an existing atlas to label a new polydata.
 
     Returns the cluster indices for all the fibers. output_polydata, cluster_numbers, color, embed = wma.cluster.spectral_atlas_label(input_data, atlas)
@@ -586,47 +599,92 @@ def spectral_atlas_label(input_polydata, atlas, number_of_jobs=2):
 
     number_fibers = input_polydata.GetNumberOfLines()
     sz = atlas.nystrom_polydata.GetNumberOfLines()
-    
-    # 1) Compute fiber similarities.
-    B = \
-        _rectangular_similarity_matrix(input_polydata, atlas.nystrom_polydata, 
-                                       atlas.threshold, atlas.sigma, number_of_jobs, distance_method=atlas.distance_method,
-                                       bilateral=atlas.bilateral)
 
-    # 2) Do Normalized Cuts transform of similarity matrix.
-    # row sum estimate for current B part of the matrix
-    row_sum_2 = numpy.sum(B, axis=0) + \
-        numpy.dot(atlas.row_sum_matrix, B)
+    if gpu.use_gpu(use_gpu):
+        # fully fused GPU path: the similarity matrix is computed and
+        # exp-kernel applied on the device, then normalized, embedded and
+        # labeled without ever crossing PCIe (only embed comes back)
+        print(f"<{os.path.basename(__file__)}> Computing rectangular similarity matrix on GPU (fused embedding).")
+        B_gpu = gpu.distance.rectangular_similarity_tensor(
+            input_polydata, atlas.nystrom_polydata,
+            atlas.threshold, atlas.sigma, distance_method=atlas.distance_method,
+            bilateral=atlas.bilateral)
+        embed, cluster_idx, dist, row_sum, b_col_sums = \
+            gpu.linalg.atlas_label_embedding(B_gpu, atlas)
+        del B_gpu
 
-    # in case of negative row sum estimation (this should not ever happen)
-    if any(row_sum_2<=0):
-        print(f"<{os.path.basename(__file__)}> Warning: Consider increasing sigma or using the Mean distance. negative row sum approximations.")
-        print("Number of negative row sums:", numpy.count_nonzero(row_sum_2<=0))
-        row_sum_2[row_sum_2<0] = 0.1
+    elif gpu.config.cpu_fast_enabled() and gpu.distance.distance_supported(
+            atlas.distance_method):
 
-             
-    # normalized cuts normalization
-    row_sum = numpy.concatenate((atlas.row_sum_1, row_sum_2))
-    dhat = numpy.sqrt(numpy.divide(1, row_sum))
-    #dhat = numpy.sqrt(numpy.divide(1, numpy.concatenate((atlas.row_sum_1, row_sum_2))))
-    B = \
-        numpy.multiply(B, numpy.outer(dhat[0:sz], dhat[sz:].T))
+        # vectorized CPU backend for the similarity matrix, then the
+        # original (fast, small) numpy steps for embedding/labeling
+        print(f"<{os.path.basename(__file__)}> Computing rectangular similarity matrix with the vectorized CPU backend.")
+        B = gpu.cpu_backend.rectangular_distance_matrix(
+            input_polydata, atlas.nystrom_polydata,
+            atlas.threshold, distance_method=atlas.distance_method,
+            bilateral=atlas.bilateral).T
+        if atlas.distance_method != 'StrictSimilarity':
+            B = numpy.exp(-B / (atlas.sigma * atlas.sigma))
 
-    # 3) Compute eigenvectors for use in spectral embedding
-    # <done already in atlas creation>
+        row_sum_2 = numpy.sum(B, axis=0) + numpy.dot(atlas.row_sum_matrix, B)
+        if any(row_sum_2 <= 0):
+            print(f"<{os.path.basename(__file__)}> Warning: Consider increasing sigma or using the Mean distance. negative row sum approximations.")
+            print("Number of negative row sums:", numpy.count_nonzero(row_sum_2 <= 0))
+            row_sum_2[row_sum_2 < 0] = 0.1
+        row_sum = numpy.concatenate((atlas.row_sum_1, row_sum_2))
+        dhat = numpy.sqrt(numpy.divide(1, row_sum))
+        B = numpy.multiply(B, numpy.outer(dhat[0:sz], dhat[sz:].T))
+        V = numpy.dot(numpy.dot(B.T, atlas.e_vec), \
+                          numpy.diag(numpy.divide(1.0, atlas.e_val)))
+        V = numpy.divide(V, atlas.e_vec_norm)
+        embed = numpy.zeros((number_fibers, atlas.number_of_eigenvectors))
+        for i in range(0, atlas.number_of_eigenvectors):
+            embed[:, i] = numpy.divide(V[:, -(i + 2)], V[:, -1])
+        cluster_idx, dist = scipy.cluster.vq.vq(embed, atlas.centroids)
+        b_col_sums = numpy.sum(B.T, axis=1)
 
-    # 4) Compute embedding using eigenvectors
-    V = numpy.dot(numpy.dot(B.T, atlas.e_vec), \
-                      numpy.diag(numpy.divide(1.0, atlas.e_val)))
-    V = numpy.divide(V, atlas.e_vec_norm)
-    embed = numpy.zeros((number_fibers, atlas.number_of_eigenvectors))
-    for i in range(0, atlas.number_of_eigenvectors):
-        embed[:,i] = numpy.divide(V[:,-(i+2)], V[:,-1])
+    else:
+        # 1) Compute fiber similarities (original joblib backend).
+        B = \
+            _rectangular_similarity_matrix(input_polydata, atlas.nystrom_polydata,
+                                           atlas.threshold, atlas.sigma, number_of_jobs, distance_method=atlas.distance_method,
+                                           bilateral=atlas.bilateral, use_gpu=False,
+                                           gpu_float32=gpu_float32)
 
-    # 5) Find clusters using k-means in embedding space.
-    # Actually: LABEL using centroids from atlas
-    print(f'<{os.path.basename(__file__)}> Cluster labeling in embedding space.')
-    cluster_idx, dist = scipy.cluster.vq.vq(embed, atlas.centroids)
+        # 2) Do Normalized Cuts transform of similarity matrix.
+        # row sum estimate for current B part of the matrix
+        row_sum_2 = numpy.sum(B, axis=0) + \
+            numpy.dot(atlas.row_sum_matrix, B)
+
+        # in case of negative row sum estimation (this should not ever happen)
+        if any(row_sum_2<=0):
+            print(f"<{os.path.basename(__file__)}> Warning: Consider increasing sigma or using the Mean distance. negative row sum approximations.")
+            print("Number of negative row sums:", numpy.count_nonzero(row_sum_2<=0))
+            row_sum_2[row_sum_2<0] = 0.1
+
+        # normalized cuts normalization
+        row_sum = numpy.concatenate((atlas.row_sum_1, row_sum_2))
+        dhat = numpy.sqrt(numpy.divide(1, row_sum))
+        #dhat = numpy.sqrt(numpy.divide(1, numpy.concatenate((atlas.row_sum_1, row_sum_2))))
+        B = \
+            numpy.multiply(B, numpy.outer(dhat[0:sz], dhat[sz:].T))
+
+        # 3) Compute eigenvectors for use in spectral embedding
+        # <done already in atlas creation>
+
+        # 4) Compute embedding using eigenvectors
+        V = numpy.dot(numpy.dot(B.T, atlas.e_vec), \
+                          numpy.diag(numpy.divide(1.0, atlas.e_val)))
+        V = numpy.divide(V, atlas.e_vec_norm)
+        embed = numpy.zeros((number_fibers, atlas.number_of_eigenvectors))
+        for i in range(0, atlas.number_of_eigenvectors):
+            embed[:,i] = numpy.divide(V[:,-(i+2)], V[:,-1])
+
+        # 5) Find clusters using k-means in embedding space.
+        # Actually: LABEL using centroids from atlas
+        print(f'<{os.path.basename(__file__)}> Cluster labeling in embedding space.')
+        cluster_idx, dist = scipy.cluster.vq.vq(embed, atlas.centroids)
+        b_col_sums = numpy.sum(B.T, axis=1)
 
     # 6) Output results.
     print(f'<{os.path.basename(__file__)}> Done labeling clusters, returning results.')
@@ -636,13 +694,14 @@ def spectral_atlas_label(input_polydata, atlas, number_of_jobs=2):
     # for now modify input polydata by adding two arrays
     output_polydata = input_polydata
     output_polydata = \
-        _format_output_polydata(output_polydata, cluster_idx, color, embed, row_sum, numpy.sum(B.T, axis=1))
+        _format_output_polydata(output_polydata, cluster_idx, color, embed, row_sum, b_col_sums)
 
     return output_polydata, cluster_idx, color, embed
 
 def _rectangular_distance_matrix(input_polydata_n, input_polydata_m, threshold,
                               number_of_jobs=3, landmarks_n=None, landmarks_m=None,
-                              distance_method='Hausdorff', bilateral=False):
+                              distance_method='Hausdorff', bilateral=False,
+                              use_gpu=None, gpu_float32=None):
 
     """ Internal convenience function available to clustering
     routines.
@@ -658,6 +717,27 @@ def _rectangular_distance_matrix(input_polydata_n, input_polydata_m, threshold,
 
         distances = similarity.rectangular_frechet_distances(input_polydata_n, input_polydata_m)
         distances = numpy.array(distances)
+
+    elif gpu.use_gpu(use_gpu) and gpu.distance.distance_supported(
+            distance_method, landmarks_n=landmarks_n, landmarks_m=landmarks_m):
+
+        print(f"<{os.path.basename(__file__)}> Computing rectangular distance matrix on GPU.")
+        # the GPU kernel returns (n, m); transpose to the same (m, n)
+        # layout as the CPU path below
+        distances = gpu.distance.rectangular_distance_matrix(
+            input_polydata_n, input_polydata_m, threshold,
+            distance_method=distance_method, bilateral=bilateral,
+            gpu_float32=gpu_float32).T
+
+    elif gpu.config.cpu_fast_enabled() and gpu.distance.distance_supported(
+            distance_method, landmarks_n=landmarks_n, landmarks_m=landmarks_m):
+
+        # vectorized multi-threaded numpy backend: same numbers as the
+        # joblib path below, much faster
+        print(f"<{os.path.basename(__file__)}> Computing rectangular distance matrix with the vectorized CPU backend.")
+        distances = gpu.cpu_backend.rectangular_distance_matrix(
+            input_polydata_n, input_polydata_m, threshold,
+            distance_method=distance_method, bilateral=bilateral).T
 
     else:
         
@@ -688,7 +768,7 @@ def _rectangular_distance_matrix(input_polydata_n, input_polydata_m, threshold,
 
 def _rectangular_similarity_matrix(input_polydata_n, input_polydata_m, threshold, sigma,
                                 number_of_jobs=3, landmarks_n=None, landmarks_m=None, distance_method='Hausdorff',
-                                bilateral=False):
+                                bilateral=False, use_gpu=None, gpu_float32=None):
 
     """ Internal convenience function available to clustering
     routines.
@@ -700,6 +780,17 @@ def _rectangular_similarity_matrix(input_polydata_n, input_polydata_m, threshold
     parameters threshold and sigma.
 
     """
+
+    if gpu.use_gpu(use_gpu) and gpu.distance.distance_supported(
+            distance_method, landmarks_n=landmarks_n, landmarks_m=landmarks_m):
+
+        print(f"<{os.path.basename(__file__)}> Computing rectangular similarity matrix on GPU.")
+        # transpose to the same (m, n) layout as the CPU path below
+        similarity_matrix = gpu.distance.rectangular_similarity_matrix(
+            input_polydata_n, input_polydata_m, threshold, sigma,
+            distance_method=distance_method, bilateral=bilateral,
+            gpu_float32=gpu_float32).T
+        return similarity_matrix
 
     distances = _rectangular_distance_matrix(input_polydata_n, input_polydata_m, threshold,
                                              number_of_jobs, landmarks_n, landmarks_m, distance_method, bilateral=bilateral)
@@ -715,7 +806,8 @@ def _rectangular_similarity_matrix(input_polydata_n, input_polydata_m, threshold
 
 def _pairwise_distance_matrix(input_polydata, threshold,
                               number_of_jobs=3, landmarks=None, distance_method='Hausdorff',
-                              bilateral=False, sigmasq=6400):
+                              bilateral=False, sigmasq=6400,
+                              use_gpu=None, gpu_float32=None):
 
     """ Internal convenience function available to clustering
     routines.
@@ -729,6 +821,22 @@ def _pairwise_distance_matrix(input_polydata, threshold,
 
         distances = similarity.pairwise_frechet_distances(input_polydata,input_polydata)
         distances = numpy.array(distances)
+
+    elif gpu.use_gpu(use_gpu) and gpu.distance.distance_supported(
+            distance_method, landmarks=landmarks):
+
+        print(f"<{os.path.basename(__file__)}> Computing pairwise distance matrix on GPU.")
+        distances = gpu.distance.pairwise_distance_matrix(
+            input_polydata, threshold, distance_method=distance_method,
+            bilateral=bilateral, sigmasq=sigmasq, gpu_float32=gpu_float32)
+
+    elif gpu.config.cpu_fast_enabled() and gpu.distance.distance_supported(
+            distance_method, landmarks=landmarks):
+
+        print(f"<{os.path.basename(__file__)}> Computing pairwise distance matrix with the vectorized CPU backend.")
+        distances = gpu.cpu_backend.pairwise_distance_matrix(
+            input_polydata, threshold, distance_method=distance_method,
+            bilateral=bilateral, sigmasq=sigmasq)
 
     else:
 
@@ -761,7 +869,8 @@ def _pairwise_distance_matrix(input_polydata, threshold,
 
 def _pairwise_similarity_matrix(input_polydata, threshold, sigma,
                                 number_of_jobs=3, landmarks=None, distance_method='Hausdorff',
-                                bilateral=False):
+                                bilateral=False, sigmasq=6400,
+                                use_gpu=None, gpu_float32=None):
 
     """ Internal convenience function available to clustering
     routines.
@@ -773,6 +882,25 @@ def _pairwise_similarity_matrix(input_polydata, threshold, sigma,
     parameters threshold and sigma.
 
     """
+
+    if gpu.use_gpu(use_gpu) and gpu.distance.distance_supported(
+            distance_method, landmarks=landmarks):
+
+        print(f"<{os.path.basename(__file__)}> Computing pairwise similarity matrix on GPU.")
+        similarity_matrix = gpu.distance.pairwise_similarity_matrix(
+            input_polydata, threshold, sigma, distance_method=distance_method,
+            bilateral=bilateral, sigmasq=sigmasq, gpu_float32=gpu_float32)
+
+        # same sanity check as the CPU path: on-diagonal elements are all 1
+        if __debug__:
+            test = numpy.min(numpy.diag(similarity_matrix)) == 1.0
+            if not test:
+                print(f"<{os.path.basename(__file__)}> ERROR: On-diagonal elements are not all 1.0.")
+                print(" Minimum on-diagonal value:", numpy.min(numpy.diag(similarity_matrix)))
+                print(" Maximum on-diagonal value:", numpy.max(numpy.diag(similarity_matrix)))
+                print(" Mean value:", numpy.mean(numpy.diag(similarity_matrix)))
+                raise AssertionError
+        return similarity_matrix
 
     distances = _pairwise_distance_matrix(input_polydata, threshold,
                                           number_of_jobs, landmarks, distance_method, bilateral=bilateral)
@@ -811,31 +939,39 @@ def _format_output_polydata(output_polydata, cluster_idx, color, embed, estimate
     EmbeddingCoordinate
 
     """
-    #print computed_column_sum.shape
-     
-    embed_colors = vtk.vtkUnsignedCharArray()
-    embed_colors.SetNumberOfComponents(3)
+    # vectorized array construction (same value casts as the
+    # InsertNext* calls of the original per-line loop)
+    from vtk.util import numpy_support
+
+    n_lines = output_polydata.GetNumberOfLines()
+
+    embed_colors_arr = numpy.ascontiguousarray(
+        numpy.asarray(color)[:n_lines, :3], dtype=numpy.uint8)
+    embed_colors = numpy_support.numpy_to_vtk(embed_colors_arr, deep=True)
     embed_colors.SetName('EmbeddingColor')
-    cluster_colors = vtk.vtkIntArray()
+
+    cluster_arr = numpy.ascontiguousarray(
+        numpy.asarray(cluster_idx)[:n_lines], dtype=numpy.int32)
+    cluster_colors = numpy_support.numpy_to_vtk(cluster_arr, deep=True)
     cluster_colors.SetName('ClusterNumber')
-    embed_data = vtk.vtkFloatArray()
-    embed_data.SetNumberOfComponents(embed.shape[1])
+
+    embed_arr = numpy.ascontiguousarray(
+        numpy.asarray(embed)[:n_lines, :], dtype=numpy.float32)
+    embed_data = numpy_support.numpy_to_vtk(embed_arr, deep=True)
+    embed_data.SetNumberOfComponents(embed_arr.shape[1])
     embed_data.SetName('EmbeddingCoordinate')
-    row_sum_data = vtk.vtkFloatArray()
+
+    row_sum_arr = numpy.ascontiguousarray(
+        numpy.asarray(estimated_row_sum, dtype=numpy.float64).ravel()[:n_lines],
+        dtype=numpy.float32)
+    row_sum_data = numpy_support.numpy_to_vtk(row_sum_arr, deep=True)
     row_sum_data.SetName('TotalFiberSimilarity')
-    col_sum_data = vtk.vtkFloatArray()
+
+    col_arr = numpy.ascontiguousarray(
+        numpy.asarray(computed_column_sum, dtype=numpy.float64).ravel()[:n_lines],
+        dtype=numpy.float32)
+    col_sum_data = numpy_support.numpy_to_vtk(col_arr, deep=True)
     col_sum_data.SetName('MeasuredFiberSimilarity')
-    
-    for lidx in range(0, output_polydata.GetNumberOfLines()):
-        embed_colors.InsertNextTuple3(
-            color[lidx, 0], color[lidx, 1], color[lidx, 2])
-        cluster_colors.InsertNextTuple1(int(cluster_idx[lidx]))
-        if (vtk.vtkVersion().GetVTKMajorVersion() >= 7.1):
-          embed_data.InsertNextTypedTuple(embed[lidx, :])
-        else:
-          embed_data.InsertNextTupleValue(embed[lidx, :])
-        row_sum_data.InsertNextTuple1(float(estimated_row_sum[lidx]))
-        col_sum_data.InsertNextTuple1(float(computed_column_sum[lidx]))
 
     output_polydata.GetCellData().AddArray(embed_data)
     output_polydata.GetCellData().AddArray(cluster_colors)

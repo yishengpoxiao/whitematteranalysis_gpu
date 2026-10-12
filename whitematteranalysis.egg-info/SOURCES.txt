@@ -85,3 +85,10 @@ whitematteranalysis.egg-info/SOURCES.txt
 whitematteranalysis.egg-info/dependency_links.txt
 whitematteranalysis.egg-info/requires.txt
 whitematteranalysis.egg-info/top_level.txt
+whitematteranalysis/gpu/__init__.py
+whitematteranalysis/gpu/config.py
+whitematteranalysis/gpu/cpu_backend.py
+whitematteranalysis/gpu/distance.py
+whitematteranalysis/gpu/fiber_tensors.py
+whitematteranalysis/gpu/linalg.py
+whitematteranalysis/gpu/registration.py

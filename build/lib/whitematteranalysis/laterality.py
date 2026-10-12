@@ -35,7 +35,7 @@ except ImportError:
 
 from .fibers import FiberArray
 from .io import LateralityResults
-from . import filter, similarity
+from . import filter, similarity, gpu
 
 def compute_laterality_index(left, right, idx=None):
     ''' Compute laterality index from left and right hemisphere quantities.'''
@@ -169,8 +169,52 @@ class WhiteMatterLaterality:
                 "/ Total:", self.fibers.number_of_fibers)
             print(f"<{os.path.basename(__file__)}> Starting to compute laterality indices")
 
-        # run the computation, either in parallel or not
-        if (USE_PARALLEL & (self.parallel_jobs > 1)):
+        # run the computation, either on GPU, on the vectorized CPU
+        # backend, in parallel, or not
+        if gpu.use_gpu():
+            if self.verbose:
+                print(f"<{os.path.basename(__file__)}> Computing laterality on GPU.")
+
+            # compare all (hemisphere) fibers to each hemisphere array at
+            # once; fibers are reflected to the target hemisphere first,
+            # exactly like similarity.total_similarity_for_laterality
+            X_all = gpu.fiber_tensors.fiber_array_to_numpy(self.fibers)
+            X_right = gpu.fiber_tensors.fiber_array_to_numpy(fiber_array_right)
+            X_left = gpu.fiber_tensors.fiber_array_to_numpy(fiber_array_left)
+            hem_rows = self.fibers.index_hem
+            X_hem = X_all[hem_rows]
+
+            sim_right = gpu.distance.total_similarity_matrix_strict(
+                X_hem, X_right, self.fibers.is_left_hem[hem_rows],
+                self.threshold, sigmasq)
+            sim_left = gpu.distance.total_similarity_matrix_strict(
+                X_hem, X_left, self.fibers.is_right_hem[hem_rows],
+                self.threshold, sigmasq)
+
+            right_hem_total[hem_rows] = sim_right.sum(1)
+            left_hem_total[hem_rows] = sim_left.sum(1)
+
+        elif gpu.config.cpu_fast_enabled():
+            if self.verbose:
+                print(f"<{os.path.basename(__file__)}> Computing laterality with the vectorized CPU backend.")
+
+            X_all = gpu.fiber_tensors.fiber_array_to_numpy(self.fibers)
+            X_right = gpu.fiber_tensors.fiber_array_to_numpy(fiber_array_right)
+            X_left = gpu.fiber_tensors.fiber_array_to_numpy(fiber_array_left)
+            hem_rows = self.fibers.index_hem
+            X_hem = X_all[hem_rows]
+
+            sim_right = gpu.cpu_backend.total_similarity_matrix_strict(
+                X_hem, X_right, self.fibers.is_left_hem[hem_rows],
+                self.threshold, sigmasq)
+            sim_left = gpu.cpu_backend.total_similarity_matrix_strict(
+                X_hem, X_left, self.fibers.is_right_hem[hem_rows],
+                self.threshold, sigmasq)
+
+            right_hem_total[hem_rows] = sim_right.sum(1)
+            left_hem_total[hem_rows] = sim_left.sum(1)
+
+        elif (USE_PARALLEL & (self.parallel_jobs > 1)):
             if self.verbose:
                 print(f"<{os.path.basename(__file__)}> Starting parallel code. Processes:", \
                     self.parallel_jobs)

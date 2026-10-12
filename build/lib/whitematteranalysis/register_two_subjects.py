@@ -131,7 +131,31 @@ class RegisterTractography:
         # choice of optimization method
         #self.optimizer = "Powell"
         self.optimizer = "Cobyla"
-        
+
+        # GPU options. None means follow the global wma.gpu config
+        # (environment variables / command line). Set True or False to
+        # override for this registration only.
+        self.use_gpu = None
+
+    def _using_gpu(self):
+        """Resolve whether the objective should run on the GPU."""
+        import whitematteranalysis.gpu as _gpu
+        if not _gpu.available():
+            return False
+        return _gpu.use_gpu(self.use_gpu)
+
+    def _using_cpu_fast(self):
+        """True when the (non-GPU) objective should use the vectorized
+        CPU backend instead of the original per-fiber loop."""
+
+        import whitematteranalysis.gpu as _gpu
+        if self._using_gpu():
+            return False
+        if self.use_gpu is True:
+            return False
+        import os
+        return os.environ.get('WMA_CPU_FAST', '1') in ('1', 'true', 'yes', 'on')
+
     def objective_function(self, current_x):
         """ The actual objective used in registration.  Function of
         the current x in search space, as well as parameters of the
@@ -141,17 +165,29 @@ class RegisterTractography:
         # keep track of current x value
         self._x_opt = current_x
 
-        # get and apply transforms from current_x
-        ## t1 = time.time()
-        moving = transform_fiber_array_numpy(self.moving, current_x, self.mode)
-        ## t2 = time.time()
-        ##moving = transform_fiber_array_numpy(self.moving_points, self.number_of_fibers_moving, self.points_per_fiber, current_x)
-        ## t3 = time.time()
-        ## diff = numpy.abs(movingOLD - moving)
-        ## print "DIFFERENCE IN TXFORMS:", numpy.max(diff), "TIME:", t2-t1, t3-t2
+        # get and apply transforms from current x, then compute objective
+        if self._using_gpu():
+            import whitematteranalysis.gpu as _gpu
+            moving = _gpu.registration.transform_fiber_array(self.moving, current_x, self.mode)
+            obj = _gpu.registration.inner_loop_objective(self.fixed, moving, self.sigma * self.sigma)
+        elif self._using_cpu_fast():
+            import whitematteranalysis.gpu as _gpu
+            # the batched 4x4 transform is much faster than the per-point
+            # vtk loop and bit-identical; the entropy objective below is
+            # already numpy-vectorized per fiber and is fastest as-is
+            moving = _gpu.cpu_backend.transform_fiber_array(self.moving, current_x, self.mode)
+            obj = inner_loop_objective(self.fixed, moving, self.sigma * self.sigma)
+        else:
+            ## t1 = time.time()
+            moving = transform_fiber_array_numpy(self.moving, current_x, self.mode)
+            ## t2 = time.time()
+            ##moving = transform_fiber_array_numpy(self.moving_points, self.number_of_fibers_moving, self.points_per_fiber, current_x)
+            ## t3 = time.time()
+            ## diff = numpy.abs(movingOLD - moving)
+            ## print "DIFFERENCE IN TXFORMS:", numpy.max(diff), "TIME:", t2-t1, t3-t2
 
-        # compute objective
-        obj = inner_loop_objective(self.fixed, moving, self.sigma * self.sigma)
+            # compute objective
+            obj = inner_loop_objective(self.fixed, moving, self.sigma * self.sigma)
 
         # save objective function value for analysis of performance
         self.objective_function_values.append(obj)
