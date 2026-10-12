@@ -25,6 +25,7 @@ from slicer.ScriptedLoadableModule import (
     ScriptedLoadableModule, ScriptedLoadableModuleWidget,
     ScriptedLoadableModuleLogic, ScriptedLoadableModuleTest)
 
+from WMARegistrationUI import RegistrationOptions
 import WMAGuiCommon as common
 import WMAtlasLabelGPUCore as _CORE
 
@@ -39,7 +40,7 @@ class WMAPipeline(ScriptedLoadableModule):
         self.parent.contributors = "WhiteMatterAnalysis GPU acceleration project"
         self.parent.helpText = """
 One-click full pipeline (equivalent to wm_apply_ORG_atlas_to_subject.sh):
-affine registration to the atlas, fiber labeling, atlas-based outlier
+selected registration to the atlas, fiber labeling, atlas-based outlier
 removal, mapping back to subject space and to the anatomically named
 tracts of the atlas. Just provide the subject tractography and the
 atlas directory.
@@ -92,9 +93,11 @@ class WMAPipelineWidget(ScriptedLoadableModuleWidget):
 
         common.add_backend_row(form, self)
 
-        self.registerCheckBox = qt.QCheckBox("Register subject to atlas (affine)")
+        self.registerCheckBox = qt.QCheckBox("Register subject to atlas")
         self.registerCheckBox.checked = True
         form.addRow("", self.registerCheckBox)
+        self.registrationOptions = RegistrationOptions(form)
+        self.registerCheckBox.connect('toggled(bool)', self.onRegistrationToggled)
 
         self.outlierCheckBox = qt.QCheckBox("Remove cluster outliers (atlas-based)")
         self.outlierCheckBox.checked = True
@@ -118,7 +121,7 @@ class WMAPipelineWidget(ScriptedLoadableModuleWidget):
         self.visualizationComboBox.addItems([
             "Anatomical tracts (otherwise one cluster overview)",
             "Individual clusters (initially hidden)",
-            "Save only (no scene nodes)"])
+            "Save only (no tractography nodes)"])
         form.addRow("Result display:", self.visualizationComboBox)
 
         self.saveCheckBox = qt.QCheckBox("Save cluster files and tractography")
@@ -139,6 +142,10 @@ class WMAPipelineWidget(ScriptedLoadableModuleWidget):
         self.statusLabel.setPlainText(
             "whitematteranalysis: OK" if wma_ok else wma_detail)
 
+    def onRegistrationToggled(self, enabled):
+        self.registrationOptions.method.enabled = enabled
+        self.registrationOptions.advanced.enabled = enabled
+
     def onPickAtlas(self):
         path = common.pick_directory(slicer.util.mainWindow(),
                                      "Select atlas directory", self.atlasDirectory)
@@ -157,7 +164,7 @@ class WMAPipelineWidget(ScriptedLoadableModuleWidget):
         node = self.inputSelector.currentNode()
         if node is None or not self.atlasDirectory:
             return
-        polydata = node.GetPolyData()
+        polydata = common.world_polydata(node)
         if polydata is None or polydata.GetNumberOfLines() == 0:
             slicer.util.errorDisplay("The selected node has no tractography lines.")
             return
@@ -182,14 +189,22 @@ class WMAPipelineWidget(ScriptedLoadableModuleWidget):
             subject_pd = polydata
 
             if do_register:
+                options = self.registrationOptions.arguments(fiber_length)
+                if options['verbose'] and not (do_save and self.outputDirectory):
+                    raise ValueError('Enable saving and select an output directory for intermediate outputs.')
                 reg_atlas = _CORE.find_registration_atlas(self.atlasDirectory)
                 common.status(self, "Registration target: %s" % reg_atlas, 3)
                 atlas_pd = wma.io.read_polydata(reg_atlas)
                 reg = _CORE.register_subject_to_atlas(
                     polydata, atlas_pd, fiber_length_mm=fiber_length,
                     backend=backend,
-                    progress_callback=lambda t, p: common.status(self, t, p))
+                    progress_callback=lambda t, p: common.status(self, t, p),
+                    output_directory=os.path.join(self.outputDirectory, 'registration') if do_save else None,
+                    **options)
                 transform = reg['transform']
+                self.transformNode = common.add_registration_transform(
+                    node.GetName() + '_to_atlas', transform,
+                    self.outputDirectory if do_save else None)
                 subject_pd = _CORE.apply_transform_to_polydata(polydata, transform)
                 common.status(self, "Registration done (%d iterations)."
                               % reg['iterations'])

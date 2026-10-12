@@ -1,13 +1,6 @@
 # -*- coding: utf-8 -*-
 
-"""WMA Register to Atlas
-
-Affine registration of a subject whole-brain tractography to a WMA
-atlas (wm_register_to_atlas_new.py affine defaults, GPU/CPU
-accelerated objective). The registration target is found
-automatically: official atlases use ORG-RegAtlas-100HCP/
-registration_atlas.vtk; self-built atlases fall back to atlas.vtp.
-"""
+"""Moving-to-fixed tractography registration, including atlas targets."""
 
 import os
 import sys
@@ -19,13 +12,13 @@ for p in (VENDOR,):
         sys.path.insert(0, p)
 
 import qt
-import vtk
 
 import slicer
 from slicer.ScriptedLoadableModule import (
     ScriptedLoadableModule, ScriptedLoadableModuleWidget,
     ScriptedLoadableModuleLogic, ScriptedLoadableModuleTest)
 
+from WMARegistrationUI import RegistrationOptions
 import WMAGuiCommon as common
 import WMAtlasLabelGPUCore as _CORE
 
@@ -34,26 +27,26 @@ class WMARegisterToAtlas(ScriptedLoadableModule):
 
     def __init__(self, parent):
         ScriptedLoadableModule.__init__(self, parent)
-        self.parent.title = "WMA Register to Atlas"
+        self.parent.title = "WMA Tractography Registration"
         self.parent.categories = [common.CATEGORY]
         self.parent.dependencies = []
         self.parent.contributors = "WhiteMatterAnalysis GPU acceleration project"
         self.parent.helpText = """
-Affine registration of a subject whole-brain tractography to a WMA
-atlas (GPU/CPU accelerated). Provide the atlas directory; the
-registration target (ORG-RegAtlas registration_atlas.vtk, or atlas.vtp
-for self-built atlases) is located automatically.
+Register a moving tractography node to a fixed tractography node or an atlas.
+Choose a WMA CLI preset, rigid registration, or a custom multiscale schedule.
+The final transform remains in the scene and is saved when file output is enabled.
+Nonrigid registration expects inputs aligned with rigid or affine first.
 """
 
 
 class WMARegisterToAtlasLogic(ScriptedLoadableModuleLogic):
 
     def register(self, subject_polydata, atlas_polydata, fiber_length_mm,
-                 backend, progress_callback=None):
+                 backend, progress_callback=None, **options):
         return _CORE.register_subject_to_atlas(
             subject_polydata, atlas_polydata,
             fiber_length_mm=fiber_length_mm, backend=backend,
-            progress_callback=progress_callback)
+            progress_callback=progress_callback, **options)
 
     @staticmethod
     def apply_transform(polydata, transform):
@@ -76,16 +69,24 @@ class WMARegisterToAtlasWidget(ScriptedLoadableModuleWidget):
     def _setup_ui(self):
         ScriptedLoadableModuleWidget.setup(self)
         self._CORE, wma_ok, wma_detail = common.ensure_environment()
-        _CORE = self._CORE
 
-        formBox = qt.QGroupBox("Register subject to atlas (affine)")
+        formBox = qt.QGroupBox("Register moving tractography to fixed tractography")
         form = qt.QFormLayout(formBox)
 
         self.inputSelector = slicer.qMRMLNodeComboBox()
         self.inputSelector.nodeTypes = common.tractography_node_types()
         self.inputSelector.noneEnabled = False
         self.inputSelector.setMRMLScene(slicer.mrmlScene)
-        form.addRow("Input tractography:", self.inputSelector)
+        form.addRow("Moving tractography:", self.inputSelector)
+
+        self.targetComboBox = qt.QComboBox()
+        self.targetComboBox.addItems(['Fixed tractography node', 'Atlas directory'])
+        form.addRow('Fixed target source:', self.targetComboBox)
+        self.fixedSelector = slicer.qMRMLNodeComboBox()
+        self.fixedSelector.nodeTypes = common.tractography_node_types()
+        self.fixedSelector.noneEnabled = True
+        self.fixedSelector.setMRMLScene(slicer.mrmlScene)
+        form.addRow('Fixed tractography:', self.fixedSelector)
 
         self.atlasDirectoryButton = qt.QPushButton("Select atlas directory...")
         self.atlasDirectory = ""
@@ -99,9 +100,12 @@ class WMARegisterToAtlasWidget(ScriptedLoadableModuleWidget):
         self.fiberLengthSpinBox.suffix = " mm"
         form.addRow("Minimum fiber length:", self.fiberLengthSpinBox)
 
+        self.registrationOptions = RegistrationOptions(form)
         common.add_backend_row(form, self)
+        self.targetComboBox.connect('currentIndexChanged(int)', self.onTargetChanged)
+        self.onTargetChanged()
 
-        self.saveCheckBox = qt.QCheckBox("Save registered tractography to file")
+        self.saveCheckBox = qt.QCheckBox("Save registered tractography and transform")
         self.saveCheckBox.checked = True
         form.addRow("", self.saveCheckBox)
 
@@ -140,45 +144,62 @@ class WMARegisterToAtlasWidget(ScriptedLoadableModuleWidget):
             self.outputDirectory = path
             self.outputDirectoryButton.text = path
 
+    def onTargetChanged(self, *args):
+        atlas = self.targetComboBox.currentIndex == 1
+        self.fixedSelector.enabled = not atlas
+        self.atlasDirectoryButton.enabled = atlas
+
     def onApply(self):
         node = self.inputSelector.currentNode()
-        if node is None or not self.atlasDirectory:
+        fixed = self.fixedSelector.currentNode()
+        use_atlas = self.targetComboBox.currentIndex == 1
+        if node is None or (use_atlas and not self.atlasDirectory) or (not use_atlas and fixed is None):
+            slicer.util.errorDisplay('Select moving tractography and a fixed target first.')
             return
-        polydata = node.GetPolyData()
-        if polydata is None or polydata.GetNumberOfLines() == 0:
-            slicer.util.errorDisplay("The selected node has no tractography lines.")
+        if not use_atlas and node == fixed:
+            slicer.util.errorDisplay('Choose different moving and fixed tractography nodes.')
             return
-
-        backend = common.backend_key(self.backendComboBox.currentIndex)
-        logic = WMARegisterToAtlasLogic()
+        if self.saveCheckBox.checked and not self.outputDirectory:
+            slicer.util.errorDisplay('Select an output directory or uncheck saving.')
+            return
         self.applyButton.enabled = False
         try:
             import whitematteranalysis as wma
-            reg_atlas = _CORE.find_registration_atlas(self.atlasDirectory)
-            common.status(self, "Registration target: %s" % reg_atlas, 5)
-            atlas_pd = wma.io.read_polydata(reg_atlas)
-
-            reg = logic.register(polydata, atlas_pd,
-                                 self.fiberLengthSpinBox.value, backend,
-                                 progress_callback=lambda t, p: common.status(self, t, p))
-            registered = logic.apply_transform(polydata, reg['transform'])
-
-            out_node = common.add_tractography_node(node.GetName() + '_registered')
-            out_node.SetAndObservePolyData(registered)
-            out_node.CreateDefaultDisplayNodes()
-
-            if self.saveCheckBox.checked and self.outputDirectory:
-                fname = os.path.join(self.outputDirectory,
-                                     os.path.basename(node.GetName()) + '_reg.vtp')
-                import whitematteranalysis as wma
-                wma.io.write_polydata(registered, fname)
-                common.status(self, "Saved: %s" % fname)
-
-            common.status(self, "Registration done (%d iterations, backend: %s)." % (
-                reg['iterations'], reg['backend_name']), 100)
+            options = self.registrationOptions.arguments(self.fiberLengthSpinBox.value)
+            polydata = common.world_polydata(node)
+            if use_atlas:
+                target = _CORE.find_registration_atlas(self.atlasDirectory)
+                common.status(self, 'Registration target: %s' % target, 5)
+                fixed_pd = wma.io.read_polydata(target)
+                target_name = 'atlas'
+            else:
+                fixed_pd = common.world_polydata(fixed)
+                target_name = fixed.GetName()
+            if polydata.GetNumberOfLines() == 0 or fixed_pd.GetNumberOfLines() == 0:
+                raise ValueError('Moving and fixed nodes must contain tractography lines.')
+            output = self.outputDirectory if self.saveCheckBox.checked else None
+            if options['verbose'] and not output:
+                raise ValueError('Select an output directory and enable saving for intermediate outputs.')
+            reg = WMARegisterToAtlasLogic().register(
+                polydata, fixed_pd, self.fiberLengthSpinBox.value,
+                common.backend_key(self.backendComboBox.currentIndex),
+                progress_callback=lambda t, p: common.status(self, t, p),
+                output_directory=output, **options)
+            name = node.GetName() + '_to_' + target_name
+            self.transformNode = common.add_registration_transform(name, reg['transform'], output)
+            self.outputNode = common.add_tractography_node(node.GetName() + '_registered')
+            self.outputNode.SetAndObservePolyData(polydata)
+            self.outputNode.SetAndObserveTransformNodeID(self.transformNode.GetID())
+            if output:
+                registered = _CORE.apply_transform_to_polydata(polydata, reg['transform'])
+                filename = os.path.join(output, os.path.basename(node.GetName()) + '_reg.vtp')
+                wma.io.write_polydata(registered, filename)
+                common.status(self, 'Saved: %s' % filename)
+            common.status(self, 'Registration done (%d iterations, backend: %s). Transform: %s' % (
+                reg['iterations'], reg['backend_name'], self.transformNode.GetName()), 100)
         except Exception:
             import traceback
-            common.status(self, "ERROR:\n" + traceback.format_exc())
+            common.status(self, 'ERROR:\n' + traceback.format_exc())
         finally:
             self.applyButton.enabled = True
 

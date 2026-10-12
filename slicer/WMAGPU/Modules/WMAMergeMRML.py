@@ -35,15 +35,29 @@ class WMAMergeMRML(ScriptedLoadableModule):
         self.parent.dependencies = []
         self.parent.contributors = "WhiteMatterAnalysis GPU acceleration project"
         self.parent.helpText = """
-Merge cluster nodes or cluster files into single tracts
-(wm_append_clusters.py) and create scene MRML files
-(wm_create_mrml_file.py).
+Check tractography nodes and group them in a named folder or combine
+their fibers into one named node. Directory tools append cluster files
+(wm_append_clusters.py) or create scene MRML files (wm_create_mrml_file.py).
 """
 
 
 class WMAMergeMRMLLogic(ScriptedLoadableModuleLogic):
 
-    pass
+    def merge(self, nodes, name, combine=False):
+        if not nodes:
+            raise ValueError('Check at least one tractography node.')
+        if not name.strip():
+            raise ValueError('Specify an output name.')
+        if combine:
+            merged = _CORE.append_polydatas([common.world_polydata(node) for node in nodes])
+            result = common.add_tractography_node(name.strip())
+            result.SetAndObservePolyData(merged)
+            return result
+        hierarchy = slicer.vtkMRMLSubjectHierarchyNode.GetSubjectHierarchyNode(slicer.mrmlScene)
+        folder = hierarchy.CreateFolderItem(hierarchy.GetSceneItemID(), name.strip())
+        for node in nodes:
+            hierarchy.SetItemParent(hierarchy.GetItemByDataNode(node), folder)
+        return folder
 
 
 class WMAMergeMRMLWidget(ScriptedLoadableModuleWidget):
@@ -65,11 +79,33 @@ class WMAMergeMRMLWidget(ScriptedLoadableModuleWidget):
 
         mergeBox = qt.QGroupBox("Merge cluster nodes in the scene")
         mergeForm = qt.QFormLayout(mergeBox)
-        self.mergeNodesButton = qt.QPushButton(
-            "Merge cluster_* nodes into one tract node")
-        self.mergeNodesButton.toolTip = (
-            "Appends every scene node named 'cluster_*' into a single "
-            "tract node (wm_append_clusters.py, cluster_idx per node)")
+        self.nodeTable = qt.QTableWidget()
+        self.nodeTable.setColumnCount(2)
+        self.nodeTable.setHorizontalHeaderLabels(['Tractography node', 'Fibers'])
+        self.nodeTable.minimumHeight = 200
+        self.nodeTable.setSelectionBehavior(qt.QAbstractItemView.SelectRows)
+        mergeForm.addRow(self.nodeTable)
+        buttons = qt.QWidget()
+        row = qt.QHBoxLayout(buttons)
+        self.refreshButton = qt.QPushButton('Refresh nodes')
+        self.selectAllButton = qt.QPushButton('Select all')
+        self.selectNoneButton = qt.QPushButton('Clear selection')
+        for button in (self.refreshButton, self.selectAllButton, self.selectNoneButton):
+            row.addWidget(button)
+        self.refreshButton.connect('clicked(bool)', self.refreshNodes)
+        self.selectAllButton.connect('clicked(bool)', lambda: self.checkAll(True))
+        self.selectNoneButton.connect('clicked(bool)', lambda: self.checkAll(False))
+        mergeForm.addRow(buttons)
+        self.outputNameEdit = qt.QLineEdit('merged_tract')
+        mergeForm.addRow('Output name:', self.outputNameEdit)
+        self.mergeMethodComboBox = qt.QComboBox()
+        self.mergeMethodComboBox.addItems([
+            'Group separate nodes in a named folder', 'Combine all fibers into one tractography node'])
+        self.mergeMethodComboBox.toolTip = (
+            'Folder: keeps geometry, colors and transforms of each checked node. '
+            'Combined node: appends geometry in scene coordinates, retaining cluster_idx provenance.')
+        mergeForm.addRow('Merge method:', self.mergeMethodComboBox)
+        self.mergeNodesButton = qt.QPushButton('Merge checked nodes')
         self.mergeNodesButton.connect('clicked(bool)', self.onMergeNodes)
         mergeForm.addRow("", self.mergeNodesButton)
         self.layout.addWidget(mergeBox)
@@ -102,6 +138,55 @@ class WMAMergeMRMLWidget(ScriptedLoadableModuleWidget):
         common.add_status_area(self, self.layout)
         self.statusLabel.setPlainText(
             "whitematteranalysis: OK" if wma_ok else wma_detail)
+        self._refreshPending = False
+        self._sceneObservers = [slicer.mrmlScene.AddObserver(event, self.scheduleRefresh)
+                                for event in (slicer.mrmlScene.NodeAddedEvent, slicer.mrmlScene.NodeRemovedEvent)]
+        self.refreshNodes()
+
+    def cleanup(self):
+        for observer in getattr(self, '_sceneObservers', []):
+            slicer.mrmlScene.RemoveObserver(observer)
+        self._sceneObservers = []
+
+    def enter(self):
+        self.refreshNodes()
+
+    def scheduleRefresh(self, *args):
+        if not self._refreshPending:
+            self._refreshPending = True
+            qt.QTimer.singleShot(0, self.refreshNodes)
+
+    def selectedNodes(self):
+        nodes = []
+        for row in range(self.nodeTable.rowCount):
+            item = self.nodeTable.item(row, 0)
+            if item.checkState() == qt.Qt.Checked:
+                node = slicer.mrmlScene.GetNodeByID(item.data(qt.Qt.UserRole))
+                if node is not None:
+                    nodes.append(node)
+        return nodes
+
+    def refreshNodes(self):
+        self._refreshPending = False
+        selected = {node.GetID() for node in self.selectedNodes()}
+        nodes = [node for cls in common.tractography_node_types()
+                 for node in slicer.util.getNodesByClass(cls)
+                 if node.GetPolyData() is not None and node.GetPolyData().GetNumberOfLines() > 0]
+        self.nodeTable.setRowCount(len(nodes))
+        for row, node in enumerate(nodes):
+            item = qt.QTableWidgetItem(node.GetName())
+            item.setFlags(qt.Qt.ItemIsEnabled | qt.Qt.ItemIsSelectable | qt.Qt.ItemIsUserCheckable)
+            item.setData(qt.Qt.UserRole, node.GetID())
+            item.setCheckState(qt.Qt.Checked if node.GetID() in selected else qt.Qt.Unchecked)
+            self.nodeTable.setItem(row, 0, item)
+            fibers = qt.QTableWidgetItem(str(node.GetPolyData().GetNumberOfLines()))
+            fibers.setFlags(qt.Qt.ItemIsEnabled | qt.Qt.ItemIsSelectable)
+            self.nodeTable.setItem(row, 1, fibers)
+        self.nodeTable.resizeColumnsToContents()
+
+    def checkAll(self, checked):
+        for row in range(self.nodeTable.rowCount):
+            self.nodeTable.item(row, 0).setCheckState(qt.Qt.Checked if checked else qt.Qt.Unchecked)
 
     def onPickFiles(self):
         path = common.pick_directory(slicer.util.mainWindow(),
@@ -114,24 +199,14 @@ class WMAMergeMRMLWidget(ScriptedLoadableModuleWidget):
         self.createMrmlButton.enabled = bool(path)
 
     def onMergeNodes(self):
-        nodes = [n for n in slicer.util.getNodesByClass('vtkMRMLModelNode')
-                 if n.GetName().startswith('cluster_')]
         try:
-            nodes += [n for n in slicer.util.getNodesByClass('vtkMRMLFiberBundleNode')
-                      if n.GetName().startswith('cluster_')]
-        except Exception:
-            pass
-        if len(nodes) < 2:
-            slicer.util.infoDisplay(
-                "Need at least two scene nodes named 'cluster_*' to merge.")
-            return
-        merged = _CORE.append_polydatas([n.GetPolyData() for n in nodes])
-        node = common.add_tractography_node('appended_tract')
-        node.SetAndObservePolyData(merged)
-        node.CreateDefaultDisplayNodes()
-        slicer.util.infoDisplay(
-            "Merged %d cluster nodes (%d fibers) into 'appended_tract'." % (
-                len(nodes), merged.GetNumberOfLines()))
+            nodes = self.selectedNodes()
+            self.mergeResult = WMAMergeMRMLLogic().merge(
+                nodes, self.outputNameEdit.text, self.mergeMethodComboBox.currentIndex == 1)
+            common.status(self, 'Merged %d selected nodes as %s.' % (len(nodes), self.outputNameEdit.text), 100)
+            self.refreshNodes()
+        except Exception as exc:
+            slicer.util.errorDisplay(str(exc))
 
     def onAppendFiles(self):
         cluster_list = None

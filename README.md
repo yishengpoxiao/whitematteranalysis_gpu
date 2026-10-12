@@ -66,7 +66,7 @@ extension. This ZIP is not an Extensions Manager "Install from file" archive.
 Remove an older WMAGPU release and restart before installing.
 See [installation instructions](slicer/WMAGPU/README.md#installation-and-use).
 
-The extension provides Pipeline, atlas registration, groupwise registration, atlas
+The extension provides Pipeline, moving-to-fixed/atlas registration, groupwise registration, atlas
 building, and cluster merge/MRML export. Pipeline includes atlas labeling; uncheck
 registration when the input tractography is already registered. It bundles WMA and its pure
 Python helpers; CPU mode requires no separate WMA or PyTorch installation.
@@ -76,8 +76,10 @@ Slicer's Python; installing PyTorch in Conda does not enable it in Slicer.
 
 The installer adapts the layout to the detected Slicer version. Actual application
 validation is currently Linux Slicer 5.2.2; Windows/macOS and newer Slicer versions
-require native validation. macOS/ARM use CPU mode; CUDA setup targets Linux/Windows x86_64. GUI registration currently
-supports affine mode; full ORG anatomical Pipeline validation requires actual atlas data.
+require native validation. macOS/ARM use CPU mode; CUDA setup targets Linux/Windows x86_64. GUI registration supports the CLI presets, rigid, affine, nonrigid, and custom
+multiscale schedules, retaining final Slicer Transform nodes. Merge tools offer
+checkbox selection with named folders or one combined tractography node. Full ORG
+anatomical Pipeline validation requires actual atlas data.
 See [extension installation, dependencies, packaging, and tests](slicer/WMAGPU/README.md).
 
 # WMA Installation and Usage

@@ -24,6 +24,7 @@ class SubjectToAtlasRegistration:
         
         # performance options set by user
         self.verbose = False
+        self.save_iteration_transforms = True
         self.points_per_fiber = 15
         
         # optimizer parameters set by user
@@ -151,7 +152,8 @@ class SubjectToAtlasRegistration:
         tx_list.append(self.transform)
         id_list = list()
         id_list.append(self.subject_id)
-        wma.io.write_transforms_to_itk_format(tx_list, outdir, id_list)
+        if self.save_iteration_transforms:
+            wma.io.write_transforms_to_itk_format(tx_list, outdir, id_list)
 
         
     def save_transformed_polydata(self, intermediate_save=False):

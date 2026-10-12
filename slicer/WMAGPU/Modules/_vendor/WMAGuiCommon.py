@@ -137,6 +137,37 @@ def add_tractography_node(name):
     return node
 
 
+def world_polydata(node):
+    """Read tractography in scene RAS coordinates, including parent transforms."""
+    import slicer
+    import vtk
+    transform = vtk.vtkGeneralTransform()
+    slicer.vtkMRMLTransformNode.GetTransformBetweenNodes(node.GetParentTransformNode(), None, transform)
+    return CORE.apply_transform_to_polydata(node.GetPolyData(), transform)
+
+
+def add_registration_transform(name, transform, output_directory=None):
+    """Retain a forward RAS transform and optionally save a lossless Slicer HDF5 file."""
+    import slicer
+    if transform.IsA('vtkBSplineTransform'):
+        oriented = slicer.vtkOrientedBSplineTransform()
+        oriented.SetCoefficientData(transform.GetCoefficientData())
+        oriented.SetBorderMode(transform.GetBorderMode())
+        transform = oriented
+    node = slicer.mrmlScene.AddNewNodeByClass('vtkMRMLTransformNode', name)
+    node.SetAndObserveTransformToParent(transform)
+    node.SetAttribute('WMAGPU.TransformDirection', 'Moving world RAS to fixed world RAS')
+    if output_directory:
+        # Initialize inverse B-spline coefficients before Slicer's storage reads them.
+        node.GetTransformFromParent().Update()
+        os.makedirs(output_directory, exist_ok=True)
+        filename = os.path.join(output_directory,
+                                node.GetName().replace('\\', '_').replace('/', '_') + '.h5')
+        if not slicer.util.saveNode(node, filename):
+            raise IOError('Could not save registration transform: %s' % filename)
+    return node
+
+
 def show_clusters_in_scene(pd_c_list, base_name="cluster",
                            clear_previous=True, names=None, visible=True,
                            progress_callback=None):

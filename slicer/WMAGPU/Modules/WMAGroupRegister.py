@@ -3,7 +3,7 @@
 """WMA Groupwise Registration
 
 Unbiased groupwise registration of a directory of subject
-tractographies (wm_register_multisubject_faster.py affine defaults,
+tractographies (wm_register_multisubject_faster.py presets,
 GPU/CPU accelerated objective). Outputs: registered subjects,
 transforms and registration_atlas.vtk in the chosen output directory.
 """
@@ -23,6 +23,7 @@ from slicer.ScriptedLoadableModule import (
     ScriptedLoadableModule, ScriptedLoadableModuleWidget,
     ScriptedLoadableModuleLogic, ScriptedLoadableModuleTest)
 
+from WMARegistrationUI import RegistrationOptions
 import WMAGuiCommon as common
 import WMAtlasLabelGPUCore as _CORE
 
@@ -36,7 +37,7 @@ class WMAGroupRegister(ScriptedLoadableModule):
         self.parent.dependencies = []
         self.parent.contributors = "WhiteMatterAnalysis GPU acceleration project"
         self.parent.helpText = """
-Unbiased groupwise (population) affine registration of all whole-brain
+Unbiased groupwise (population) rigid, affine, or nonrigid registration of all whole-brain
 tractography files in a directory (GPU/CPU accelerated objective).
 Produces registered subjects, transforms and registration_atlas.vtk.
 """
@@ -45,13 +46,13 @@ Produces registered subjects, transforms and registration_atlas.vtk.
 class WMAGroupRegisterLogic(ScriptedLoadableModuleLogic):
 
     def run(self, subject_directory, output_directory, fibers_per_subject,
-            fiber_length_mm, backend, parallel_jobs, progress_callback=None):
+            fiber_length_mm, backend, parallel_jobs, progress_callback=None, **options):
         return _CORE.register_groupwise(
             subject_directory, output_directory,
             fibers_per_subject=fibers_per_subject,
             fiber_length_mm=fiber_length_mm,
             backend=backend, parallel_jobs=parallel_jobs,
-            progress_callback=progress_callback)
+            progress_callback=progress_callback, save_transforms=False, **options)
 
 
 class WMAGroupRegisterWidget(ScriptedLoadableModuleWidget):
@@ -71,7 +72,7 @@ class WMAGroupRegisterWidget(ScriptedLoadableModuleWidget):
         ScriptedLoadableModuleWidget.setup(self)
         self._CORE, wma_ok, wma_detail = common.ensure_environment()
 
-        formBox = qt.QGroupBox("Groupwise registration of registered subjects")
+        formBox = qt.QGroupBox("Groupwise registration of subject tractographies")
         form = qt.QFormLayout(formBox)
 
         self.subjectsDirectoryButton = qt.QPushButton("Select subject directory...")
@@ -98,6 +99,7 @@ class WMAGroupRegisterWidget(ScriptedLoadableModuleWidget):
         self.fiberLengthSpinBox.suffix = " mm"
         form.addRow("Minimum fiber length:", self.fiberLengthSpinBox)
 
+        self.registrationOptions = RegistrationOptions(form, groupwise=True)
         common.add_backend_row(form, self)
 
         self.jobsSpin = qt.QSpinBox()
@@ -137,11 +139,15 @@ class WMAGroupRegisterWidget(ScriptedLoadableModuleWidget):
         logic = WMAGroupRegisterLogic()
         self.applyButton.enabled = False
         try:
+            options = self.registrationOptions.arguments(self.fiberLengthSpinBox.value)
             result = logic.run(self.subjectsDirectory, self.outputDirectory,
                                self.fibersPerSubjectSpin.value,
                                self.fiberLengthSpinBox.value, backend,
                                self.jobsSpin.value,
-                               progress_callback=lambda t, p: common.status(self, t, p))
+                               progress_callback=lambda t, p: common.status(self, t, p), **options)
+            self.transformNodes = [common.add_registration_transform(
+                sid + '_to_group', transform, self.outputDirectory)
+                for sid, transform in zip(result['subject_ids'], result['transforms'])]
             common.status(self,
                           "Done: %d subjects registered. Outputs in %s"
                           % (result['n_subjects'], result['output_directory']), 100)

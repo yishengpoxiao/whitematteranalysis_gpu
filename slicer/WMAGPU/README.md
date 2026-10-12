@@ -54,11 +54,70 @@ Internet is required only when dependencies need downloading.
 
 | Module | Function |
 |---|---|
-| WMA Pipeline | Affine registration → atlas labeling → outlier removal → return to subject space → anatomical tracts |
-| WMA Register to Atlas | Affine subject-to-atlas registration |
-| WMA Groupwise Registration | Population affine registration and registration atlas output |
+| WMA Pipeline | Selectable registration → atlas labeling → outlier removal → return to subject space → anatomical tracts |
+| WMA Tractography Registration | Moving-to-fixed or atlas registration; retained scene transforms |
+| WMA Groupwise Registration | Rigid, affine, or nonrigid population registration and registration atlas output |
 | WMA Atlas Builder | Atlas construction through multisubject spectral clustering |
-| WMA Merge & MRML | Cluster merging and scene.mrml export |
+| WMA Merge & MRML | Checkbox node selection, named folders or combined fibers, and directory MRML export |
+
+### Registration methods and transforms
+
+**WMA Tractography Registration** accepts a **Moving tractography** node and a
+**Fixed tractography** node. The resulting transform maps moving to fixed.
+Alternatively choose **Atlas directory** as the fixed target source; the existing
+ORG/built-atlas discovery rules still apply. Existing parent transforms on both
+input nodes are included using scene RAS coordinates. Inputs remain unchanged;
+the registered output keeps its geometry under the new Transform node, so the
+transform can be inspected, detached, or applied to other data in Slicer.
+
+The pairwise page and Pipeline expose every `wm_register_to_atlas_new.py` preset:
+`affine`, `affine_fast`, `rigid_affine_fast`, `affine_neonate`, `nonrigid`,
+`nonrigid_neonate`, `nonrigid_10`, `affineTEST`, and `nonrigidTEST`, plus `rigid`
+and `custom`. Groupwise registration exposes its own CLI presets, including
+`affine_fast_cheap` and `nonrigid_lowsample`, plus `rigid` and `custom`.
+The default remains `affine` on all three pages.
+
+Expand **Registration settings / custom schedule** to set the maximum fiber
+length, random seed, intermediate output saving, GPU float32, and CUDA device IDs.
+The minimum length and backend controls are on the main form. Selecting `custom`
+starts with the currently selected preset's schedule and enables editing: transform
+type, sigma, iterations, maximum optimizer evaluations, fixed/mean and moving fiber
+sample counts, initial/final steps, grid resolution, and points per fiber. Add or
+remove scales as needed. Use `Affine` and/or `Rigid` for a linear schedule, or
+`Nonrigid` for a separate deformable run. As with the CLI, run rigid/affine first
+and use the aligned result as input for nonrigid registration. Nonrigid grids use
+the upstream 200 mm cube centered at RAS zero; inputs must fit that atlas space.
+`TEST` presets check execution and are not production-quality settings.
+Registration uses one GPU; the first selected CUDA device is used.
+
+All three workflows retain their final transforms as Slicer **Transform** nodes.
+Pairwise registration and Pipeline save them as `.h5` files when file output is
+checked; Groupwise always saves one `.h5` per subject alongside its outputs.
+Groupwise transforms map each subject to the common group space. Linear and
+B-spline transforms are written through Slicer's transform storage, preserving the
+forward transform for reuse. Registered VTP/VTK files contain transformed points;
+do not apply the same transform again when loading those files. Pipeline's
+**Show clusters in original subject space** uses the inverse transform for its
+tractography output; its retained Transform still maps subject to atlas.
+
+### Selecting nodes to merge
+
+In **WMA Merge & MRML**, check the desired nodes in **Merge cluster nodes in the
+scene**, enter **Output name**, and choose:
+
+- **Group separate nodes in a named folder**: puts checked nodes under a named
+  Subject Hierarchy folder, keeping their separate geometry, colors, and transforms.
+- **Combine all fibers into one tractography node**: appends checked tractography
+  in scene coordinates into one named node. Parent transforms are included once;
+  `cluster_idx` identifies the selected source of each point. Source data is not
+  modified. The combined node uses a single display configuration.
+
+All tractography nodes can be selected regardless of their names. New and removed
+nodes update the checklist; **Refresh nodes** also picks up geometry or name changes.
+**Select all** and **Clear selection** operate on the checklist. At least one checked
+node and a nonempty output name are required. Slicer may suffix a node name if it
+already exists. Directory file appending and optional `scene.mrml` export remain
+separate actions.
 
 Outlier removal computes independent occupied clusters in parallel. **Outlier
 workers** defaults to **Auto**, using available CPU cores and limiting GPU
@@ -88,12 +147,12 @@ one worker. Auto chooses high concurrency, not a measured optimum. Choose 1 to
 avoid GPU scheduling overhead when it dominates.
 
 For labeling already registered tractography, use **WMA Pipeline** and uncheck
-**Register subject to atlas (affine)**. Outlier removal and anatomical tract mapping
+**Register subject to atlas**. Outlier removal and anatomical tract mapping
 remain independently optional. Results display as anatomically named tracts when
 mappings are available, otherwise as one overview node. **Individual clusters**
 loads nonempty clusters hidden so you can enable selected tracts in Data;
-**Save only** avoids scene loading. Scene updates are batched, and saving finishes
-before visualization. Pipeline saves VTP files only; it does not export MRML scenes.
+**Save only** avoids loading tractography results; a computed registration transform is still retained. Scene updates are batched, and saving finishes
+before visualization. Pipeline saves VTP files and, when registration runs, a reusable `.h5` transform; it does not export MRML scenes.
 Hemisphere mapping runs in atlas coordinates before returning results to subject
 space. The separate WMA Label From Atlas page has been removed.
 
@@ -145,8 +204,7 @@ triggers no installation at startup. Required dependency installation happens wh
 is not installed separately; torch's platform dependencies determine its installation.
 
 Workflows report stage progress. Long computations still run on Slicer's main
-thread and can reduce interface responsiveness. Registration pages currently expose
-affine mode; nonrigid backend APIs are available through scripts. The old local
+thread and can reduce interface responsiveness. The old local
 directory was migrated as described above; existing Slicer settings remain unchanged.
 Remove old WMA Additional module paths when installing the extension to avoid
 duplicate module names. Remove an installed older WMAGPU release before installing
@@ -177,6 +235,14 @@ This extension supports local Install from file and is not listed in the public
 Extensions Index.
 
 ## Validation
+
+`Testing/test_registration.py` verifies every CLI preset schedule and bounded
+CPU/CUDA affine, rigid, and nonrigid registration, inverse transforms, rigid
+orthogonality, and groupwise rigid/nonrigid output. `Testing/verify_registration_merge.py`
+checks the actual Slicer controls, parent transform handling, affine/B-spline HDF5
+save/reload, retained pairwise/group/pipeline transforms, and both merge methods
+with checked and excluded nodes. The optimizer tests use deliberately small samples
+and evaluation limits; they establish execution, not registration quality.
 
 `Testing/test_installer.py` verifies generated layouts, minimum versions, dependency
 constraints, existing-package reuse, and CUDA/CPU platform selection.

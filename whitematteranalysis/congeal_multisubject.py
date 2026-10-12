@@ -396,7 +396,7 @@ class MultiSubjectRegistration:
         #elapsed_time = time.time() - start_time
         #print "WRITE TXFORMS:", elapsed_time
         
-    def save_transformed_polydatas(self, intermediate_save=False, midsag_symmetric=False):
+    def save_transformed_polydatas(self, intermediate_save=False, midsag_symmetric=False, save_transforms=True):
         """ Output polydatas for final or intermediate iterations. """
         
         # this can be slow so notify the user what is happening
@@ -466,7 +466,8 @@ class MultiSubjectRegistration:
 
             # save the transforms to text files
             start_time = time.time()
-            wma.io.write_transforms_to_itk_format(transform_list, outdir, subject_id_list)
+            if save_transforms:
+                wma.io.write_transforms_to_itk_format(transform_list, outdir, subject_id_list)
             elapsed_time = time.time() - start_time
             print("WRITE TXFORMS:", elapsed_time)
 

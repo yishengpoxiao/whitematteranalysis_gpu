@@ -3,7 +3,7 @@
 """WMAtlasLabelGPUCore
 
 Pure-python core of the WhiteMatterAnalysis atlas-labeling pipeline,
-shared by the 3D Slicer module (WMAtlasLabelGPU.py) and headless use.
+shared by the WMA Slicer workflows and headless use.
 No Slicer imports here: everything can run in a plain python
 environment for testing.
 
@@ -16,6 +16,8 @@ whitematteranalysis package.
 
 import os
 import vtk
+
+from WMARegistration import registration_parameters, configure_scale
 
 
 def resolve_backend(backend):
@@ -181,18 +183,6 @@ def extract_clusters(output_polydata, cluster_idx, cluster_count):
 # Registration (subject -> atlas), following bin/wm_register_to_atlas_new.py
 # ---------------------------------------------------------------------------
 
-AFFINE_DEFAULTS = {
-    'sigma': [20, 10, 10, 5, 5],
-    'iterations': [3, 3, 3, 3, 3],
-    'maxfun': [50, 80, 80, 80, 100],
-    'mean_brain_size': [2000, 3000, 3000, 3500, 4000],
-    'subject_brain_size': [1000, 1500, 1500, 1500, 1500],
-    'initial_step': [10, 8, 5, 3, 2],
-    'final_step': [2, 2, 1, 1, 1],
-    'points_per_fiber': 10,
-}
-
-
 def find_atlas_tractography(atlas_directory):
     """Locate the atlas tractography polydata file (atlas.vtp/vtk)
     inside an atlas directory, searching common layouts."""
@@ -207,14 +197,11 @@ def find_atlas_tractography(atlas_directory):
 def register_subject_to_atlas(subject_polydata, atlas_polydata,
                               fiber_length_mm=40.0, fiber_length_max_mm=260.0,
                               backend='auto', random_seed=1000, params=None,
-                              progress_callback=None):
-    """Affine registration of a subject tractography to an atlas
-    tractography (congeal_to_atlas.SubjectToAtlasRegistration), with
-    the wm_register_to_atlas_new.py affine parameter defaults.
-
-    Returns dict(transform=vtkTransform mapping subject->atlas,
-                 transform_array=the 15 parameter vector,
-                 objectives=per-iteration objective values).
+                              progress_callback=None, mode='affine',
+                              output_directory=None, verbose=False):
+    """Register moving tractography to fixed tractography with a CLI preset
+    or a custom multiscale schedule. Returns the forward RAS transform.
+    Nonrigid registration expects inputs already aligned with rigid/affine.
     """
 
     import whitematteranalysis as wma
@@ -222,12 +209,12 @@ def register_subject_to_atlas(subject_polydata, atlas_polydata,
     import tempfile
 
     backend_name = resolve_backend(backend)
-    p = dict(AFFINE_DEFAULTS)
-    if params:
-        p.update(params)
+    p = registration_parameters(mode, params)
 
     register = wma.congeal_to_atlas.SubjectToAtlasRegistration()
-    register.output_directory = tempfile.mkdtemp(prefix='wma_register_')
+    register.output_directory = output_directory or tempfile.mkdtemp(prefix='wma_register_')
+    register.mode = p['modes'][0]
+    register.save_iteration_transforms = verbose
     register.fiber_length = fiber_length_mm
     register.fiber_length_max = fiber_length_max_mm
     register.set_subject(subject_polydata, 'subject')
@@ -239,12 +226,7 @@ def register_subject_to_atlas(subject_polydata, atlas_polydata,
     total_iterations = sum(p['iterations'])
     iteration = 0
     for scale in range(n_scales):
-        register.sigma = p['sigma'][scale]
-        register.initial_step = p['initial_step'][scale]
-        register.final_step = p['final_step'][scale]
-        register.maxfun = p['maxfun'][scale]
-        register.mean_brain_size = p['mean_brain_size'][scale]
-        register.subject_brain_size = p['subject_brain_size'][scale]
+        configure_scale(register, p, scale)
         for _it in range(p['iterations'][scale]):
             if progress_callback:
                 progress_callback(
@@ -252,6 +234,11 @@ def register_subject_to_atlas(subject_polydata, atlas_polydata,
                         scale + 1, n_scales, iteration + 1, total_iterations),
                     40 * iteration // max(1, total_iterations))
             register.iterate()
+            if verbose:
+                intermediate = os.path.join(register.output_directory, 'iteration_%05d' % (iteration + 1))
+                os.makedirs(intermediate, exist_ok=True)
+                wma.io.write_polydata(apply_transform_to_polydata(subject_polydata, register.transform),
+                                      os.path.join(intermediate, 'moving_registered.vtp'))
             iteration += 1
 
     # note: the upstream iterate() writes per-iteration objective values
@@ -842,6 +829,9 @@ def append_polydatas(pd_list):
 
     appender = vtk.vtkAppendPolyData()
     for c_idx, pd in enumerate(pd_list):
+        source = pd
+        pd = vtk.vtkPolyData()
+        pd.ShallowCopy(source)
         values = numpy.full(pd.GetPoints().GetNumberOfPoints(), c_idx,
                             dtype=numpy.int32)
         arr = numpy_support.numpy_to_vtk(values, deep=True)
@@ -955,26 +945,15 @@ def create_mrml_file(input_directory, mrml_name='scene.mrml'):
 # bin/wm_register_multisubject_faster.py
 # ---------------------------------------------------------------------------
 
-GROUPWISE_AFFINE_DEFAULTS = {
-    'sigma': [20, 10, 10, 5, 5],
-    'iterations': [3, 3, 3, 3, 3],
-    'maxfun': [50, 80, 80, 80, 100],
-    'mean_brain_size': [2000, 3000, 3000, 3500, 4000],
-    'subject_brain_size': [1000, 1500, 1500, 1500, 1500],
-    'initial_step': [10, 8, 5, 3, 2],
-    'final_step': [2, 2, 1, 1, 1],
-    'points_per_fiber': 10,
-}
-
-
 def register_groupwise(subject_directory, output_directory,
                        fibers_per_subject=10000, fiber_length_mm=20.0,
                        fiber_length_max_mm=260.0, backend='auto',
                        random_seed=None, parallel_jobs=1, params=None,
-                       progress_callback=None):
+                       progress_callback=None, mode='affine', verbose=False,
+                       save_transforms=True):
     """Unbiased groupwise registration of a directory of subject
     tractographies (congeal_multisubject.MultiSubjectRegistration),
-    affine mode with the wm_register_multisubject_faster.py defaults.
+    using the wm_register_multisubject_faster.py presets or custom settings.
 
     Returns dict(output_directory, n_subjects, iterations_run,
     backend_name). Outputs are written by the upstream class:
@@ -986,17 +965,15 @@ def register_groupwise(subject_directory, output_directory,
 
     backend_name = resolve_backend(backend)
     os.makedirs(output_directory, exist_ok=True)
-    p = dict(GROUPWISE_AFFINE_DEFAULTS)
-    if params:
-        p.update(params)
+    p = registration_parameters(mode, params, groupwise=True)
 
     register = wma.congeal_multisubject.MultiSubjectRegistration()
     register.output_directory = output_directory
     register.input_directory = subject_directory
-    register.verbose = False
+    register.verbose = verbose
     register.parallel_jobs = parallel_jobs
     register.render = False
-    register.mode = "Affine"
+    register.mode = p['modes'][0]
     register.fiber_length = fiber_length_mm
     register.fiber_length_max = fiber_length_max_mm
     register.random_seed = random_seed
@@ -1015,12 +992,7 @@ def register_groupwise(subject_directory, output_directory,
     total_iterations = sum(p['iterations'])
     iteration = 0
     for scale in range(n_scales):
-        register.sigma = p['sigma'][scale]
-        register.initial_step = p['initial_step'][scale]
-        register.final_step = p['final_step'][scale]
-        register.maxfun = p['maxfun'][scale]
-        register.mean_brain_size = p['mean_brain_size'][scale]
-        register.subject_brain_size = p['subject_brain_size'][scale]
+        configure_scale(register, p, scale)
         for _it in range(p['iterations'][scale]):
             if progress_callback:
                 progress_callback(
@@ -1032,9 +1004,10 @@ def register_groupwise(subject_directory, output_directory,
 
     if progress_callback:
         progress_callback("Saving registered tractographies...", 95)
-    register.save_transformed_polydatas()
+    register.save_transformed_polydatas(save_transforms=save_transforms)
 
     return dict(output_directory=output_directory,
                 n_subjects=n_subjects,
                 iterations_run=iteration,
+                transforms=register.transforms, subject_ids=subject_ids,
                 backend_name=backend_name)
