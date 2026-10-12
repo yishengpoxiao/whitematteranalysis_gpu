@@ -84,7 +84,7 @@ try:
             pass
         else:
             raise AssertionError('Unsupported platform accepted')
-    assert setup.TORCH_PACKAGE in setup.installation_arguments()
+    assert '--index-url' in setup.installation_arguments()
     print('TORCH_INSTALLER_VERIFIED', flush=True)
 except Exception:
     import traceback

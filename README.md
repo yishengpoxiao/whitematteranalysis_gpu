@@ -57,11 +57,14 @@ See [GPU development and validation records](doc/gpu/) for tested behavior and m
 
 ## 3D Slicer extension
 
-Install [WMAGPU-Slicer-5.2-2026-10-12-parallel.zip](slicer/WMAGPU/dist/WMAGPU-Slicer-5.2-2026-10-12-parallel.zip)
-through **Extensions Manager → Install from file**, restart, and open
-**Diffusion → WMA GPU**. If an older WMAGPU extension is already installed, remove
-that version before installing this archive. Remove old WMA additional module paths
-when switching to the extension to avoid duplicate module names.
+Use the [universal installer](slicer/WMAGPU/dist/WMAGPU-Installer-2026-10-12.zip).
+Extract it, run `InstallWMAGPU.py` inside the target Slicer's Python Interactor,
+and click **Install WMAGPU and required dependencies**. The installer detects
+Slicer's version and platform, installs missing scientific dependencies through
+Slicer's Python while preserving its NumPy/VTK versions, and installs the matching
+extension. This ZIP is not an Extensions Manager "Install from file" archive.
+Remove an older WMAGPU release and restart before installing.
+See [installation instructions](slicer/WMAGPU/README.md#installation-and-use).
 
 The extension provides Pipeline, atlas registration, groupwise registration, atlas
 building, and cluster merge/MRML export. Pipeline includes atlas labeling; uncheck
@@ -71,8 +74,9 @@ GPU setup is optional: enable **Allow downloading and installing CUDA PyTorch in
 click **Check / Install PyTorch**, and restart after completion. This installs into
 Slicer's Python; installing PyTorch in Conda does not enable it in Slicer.
 
-The archive uses the Slicer 5.2 layout and was tested on Linux with Slicer 5.2.2.
-Other Slicer versions require repackaging and validation. GUI registration currently
+The installer adapts the layout to the detected Slicer version. Actual application
+validation is currently Linux Slicer 5.2.2; Windows/macOS and newer Slicer versions
+require native validation. macOS/ARM use CPU mode; CUDA setup targets Linux/Windows x86_64. GUI registration currently
 supports affine mode; full ORG anatomical Pipeline validation requires actual atlas data.
 See [extension installation, dependencies, packaging, and tests](slicer/WMAGPU/README.md).
 

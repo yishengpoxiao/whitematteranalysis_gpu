@@ -14,10 +14,13 @@ ACTIVE_INSTALLER = None
 def installation_arguments():
     if not (sys.platform.startswith('linux') or sys.platform == 'win32') or platform.machine().lower() not in ('x86_64', 'amd64'):
         raise RuntimeError('Automatic CUDA installation supports Linux/Windows x86_64 only. Use CPU accelerated.')
-    if not (3, 8) <= sys.version_info[:2] <= (3, 12):
-        raise RuntimeError('This CUDA PyTorch installer requires Slicer Python 3.8–3.12. Use CPU accelerated.')
+    if not (3, 8) <= sys.version_info[:2] <= (3, 14):
+        raise RuntimeError('This CUDA PyTorch installer supports Slicer Python 3.8–3.14. Use CPU accelerated.')
+    package, index = TORCH_PACKAGE, TORCH_INDEX
+    if sys.version_info[:2] >= (3, 10):
+        package, index = 'torch==2.10.0', 'https://download.pytorch.org/whl/cu126'
     return ['-m', 'pip', 'install', '--disable-pip-version-check', '--no-input',
-            '--progress-bar', 'off', TORCH_PACKAGE, '--index-url', TORCH_INDEX]
+            '--progress-bar', 'off', package, '--index-url', index]
 
 
 def python_slicer():
@@ -82,8 +85,8 @@ class TorchInstaller:
             if exit_code == 0:
                 self.complete('CUDA PyTorch is already available. No packages changed.')
             else:
-                self.log.appendPlainText('Installing %s from %s. Download may take several minutes.' %
-                                         (TORCH_PACKAGE, TORCH_INDEX))
+                self.log.appendPlainText('Installing CUDA PyTorch. Download may take several minutes.\n' +
+                                         ' '.join(self.arguments))
                 self.launch('install', self.arguments)
         elif self.phase == 'install':
             if exit_code:
