@@ -6,7 +6,7 @@ and xlrd. No separate WMA installation is required; atlas data must be supplied.
 Sources are in `slicer/WMAGPU/Modules/`, release archives in `slicer/WMAGPU/dist/`,
 packaging tools in `tools/`, and validation scripts in `Testing/`.
 The current English-language release is
-`dist/WMAGPU-Slicer-5.2-2026-10-11-english.zip`, including optional PyTorch setup.
+`dist/WMAGPU-Slicer-5.2-2026-10-12-english.zip`, including optional PyTorch setup.
 
 The local legacy path `/data/yijie/wma-GPU/slicer` is a symlink to `Modules/` for
 existing Slicer Additional module paths. Obsolete source copies, `.sx` archives,
@@ -30,8 +30,20 @@ it does not depend on this local symlink.
 | WMA Label From Atlas | Labeling, optional outlier removal, and anatomical tract mapping |
 | WMA Merge & MRML | Cluster merging and scene.mrml export |
 
-The labeling atlas directory must contain `atlas.p`. Official ORG atlases and
-atlases built with this tool are supported. The complete Pipeline additionally
+Select the ORG atlas parent directory (for example `/data/software/ORG-Atlases`)
+or its `ORG-800FC-100HCP` labeling folder. Registration automatically uses
+`ORG-RegAtlas-100HCP/registration_atlas.vtk` under the same parent, following
+`wm_apply_ORG_atlas_to_subject.sh`.
+
+Built atlases accept the run root (latest completed numbered iteration), an
+`iteration_XXXXXX` directory, or `initial_clusters`. Other parent directories
+are accepted when they contain exactly one `atlas.p`; ambiguous matches require
+a more specific selection. Core functions also accept an `atlas.p` file path,
+expand `~` and environment variables, and registration accepts `.vtk`/`.vtp`
+files directly. Cluster references and anatomical mappings come from the resolved
+labeling atlas, so unrelated sibling directories are excluded.
+
+Official ORG atlases and atlases built with this tool are supported. The complete Pipeline additionally
 requires a registration atlas, reference cluster files, and `T_*.mrml` anatomical
 mappings. The interface reports missing optional mappings. Without SlicerDMRI,
 fibers use Model nodes; with SlicerDMRI, they use FiberBundle nodes.

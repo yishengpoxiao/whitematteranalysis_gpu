@@ -78,6 +78,7 @@ class WMAPipelineWidget(ScriptedLoadableModuleWidget):
         form.addRow("Input tractography:", self.inputSelector)
 
         self.atlasDirectoryButton = qt.QPushButton("Select atlas directory...")
+        self.atlasDirectoryButton.toolTip = "Select an ORG parent, ORG-800FC-100HCP, or atlas build/iteration directory."
         self.atlasDirectory = ""
         self.atlasDirectoryButton.connect('clicked(bool)', self.onPickAtlas)
         form.addRow("Atlas directory:", self.atlasDirectoryButton)

@@ -55,18 +55,66 @@ def describe_backend(backend):
     return "CPU original (per-fiber joblib)"
 
 
-def load_atlas(atlas_directory):
-    """Load a WMA atlas. `atlas_directory` must contain atlas.p
-    (e.g. <run>/iteration_00001/initial_clusters/)."""
+def _atlas_path(path):
+    return os.path.abspath(os.path.expanduser(os.path.expandvars(os.fspath(path))))
 
+
+def _find_atlas_file(directory, names):
+    """Prefer direct files; reject ambiguous recursive matches."""
+    for name in names:
+        path = os.path.join(directory, name)
+        if os.path.isfile(path):
+            return path
+    hits = []
+    for root, dirs, files in os.walk(directory):
+        dirs[:] = sorted(d for d in dirs if not d.startswith('.') and d != '__MACOSX')
+        for name in names:
+            if name in files:
+                hits.append(os.path.join(root, name))
+                break
+    if len(hits) > 1:
+        raise IOError("Multiple atlas matches in %s; select a specific atlas directory: %s"
+                      % (directory, ', '.join(hits)))
+    return hits[0] if hits else None
+
+
+def resolve_atlas_directory(atlas_directory):
+    """Accept ORG roots, atlas.p, build roots, iterations, or atlas folders.
+
+    Build roots select the latest numbered iteration containing atlas.p.
+    Other parent layouts must contain exactly one labeling atlas.
+    """
+    directory = _atlas_path(atlas_directory)
+    if os.path.isfile(directory):
+        directory = os.path.dirname(directory)
+    if not os.path.isdir(directory):
+        raise IOError("Atlas directory does not exist: %s" % directory)
+    if os.path.isfile(os.path.join(directory, 'atlas.p')):
+        return directory
+    for child in ('ORG-800FC-100HCP', 'initial_clusters'):
+        candidate = os.path.join(directory, child)
+        if os.path.isfile(os.path.join(candidate, 'atlas.p')):
+            return candidate
+    iterations = []
+    for name in os.listdir(directory):
+        if name.startswith('iteration_') and name[10:].isdigit():
+            candidate = os.path.join(directory, name, 'initial_clusters')
+            if os.path.isfile(os.path.join(candidate, 'atlas.p')):
+                iterations.append((int(name[10:]), candidate))
+    if iterations:
+        return max(iterations)[1]
+    hit = _find_atlas_file(directory, ('atlas.p',))
+    if hit:
+        return os.path.dirname(hit)
+    raise IOError("atlas.p not found in %s. Select an ORG atlas parent, "
+                  "ORG-800FC-100HCP, or a built atlas run/iteration/initial_clusters directory."
+                  % directory)
+
+
+def load_atlas(atlas_directory):
+    """Load the labeling atlas resolved from a supported file or directory."""
     import whitematteranalysis as wma
-    atlas_dir = os.path.abspath(atlas_directory)
-    if not os.path.isfile(os.path.join(atlas_dir, 'atlas.p')):
-        raise IOError(
-            "atlas.p not found in %s - point to the iteration_XXXXXX/"
-            "initial_clusters directory of an atlas built with "
-            "wm_cluster_atlas.py" % atlas_dir)
-    return wma.cluster.load_atlas(atlas_dir, 'atlas')
+    return wma.cluster.load_atlas(resolve_atlas_directory(atlas_directory), 'atlas')
 
 
 def run_atlas_labeling(input_polydata, atlas_directory, fiber_length_mm=40.0,
@@ -149,23 +197,11 @@ def find_atlas_tractography(atlas_directory):
     """Locate the atlas tractography polydata file (atlas.vtp/vtk)
     inside an atlas directory, searching common layouts."""
 
-    import whitematteranalysis as wma
-    atlas_directory = os.path.abspath(atlas_directory)
-
-    candidates = [os.path.join(atlas_directory, 'atlas.vtp'),
-                  os.path.join(atlas_directory, 'atlas.vtk')]
-    for root, _dirs, files in os.walk(atlas_directory):
-        if 'atlas.vtp' in files:
-            candidates.insert(0, os.path.join(root, 'atlas.vtp'))
-            break
-        if 'atlas.vtk' in files:
-            candidates.insert(0, os.path.join(root, 'atlas.vtk'))
-            break
-    for c in candidates:
-        if os.path.isfile(c):
-            return c
-    raise IOError("No atlas tractography (atlas.vtp / atlas.vtk) found in %s"
-                  % atlas_directory)
+    directory = resolve_atlas_directory(atlas_directory)
+    hit = _find_atlas_file(directory, ('atlas.vtp', 'atlas.vtk'))
+    if hit:
+        return hit
+    raise IOError("No atlas tractography (atlas.vtp / atlas.vtk) found in %s" % directory)
 
 
 def register_subject_to_atlas(subject_polydata, atlas_polydata,
@@ -449,16 +485,9 @@ def find_atlas_cluster_directory(atlas_directory):
     """Locate a directory containing the atlas cluster files
     (cluster_00001.vtp ...) needed for outlier removal."""
 
-    atlas_directory = os.path.abspath(atlas_directory)
-    best = None
-    for root, _dirs, files in os.walk(atlas_directory):
-        if 'cluster_00001.vtp' in files:
-            n = sum(1 for f in files if f.startswith('cluster_'))
-            if best is None or n > best[1]:
-                best = (root, n)
-    if best is None:
-        return None
-    return best[0]
+    directory = resolve_atlas_directory(atlas_directory)
+    hit = _find_atlas_file(directory, ('cluster_00001.vtp',))
+    return os.path.dirname(hit) if hit else None
 
 
 # ---------------------------------------------------------------------------
@@ -637,9 +666,8 @@ def find_anatomical_tracts_mrml(atlas_directory):
     atlas directory. Returns the list of file paths, or None when the
     atlas does not provide anatomical tracts."""
 
-    import glob
     hits = []
-    for root, _dirs, files in os.walk(os.path.abspath(atlas_directory)):
+    for root, _dirs, files in os.walk(resolve_atlas_directory(atlas_directory)):
         for f in files:
             if f.startswith('T_') and f.endswith('.mrml'):
                 hits.append(os.path.join(root, f))
@@ -727,39 +755,26 @@ def append_clusters_to_anatomical_tracts(pd_c_list, atlas_mrml_files,
 
 
 def find_registration_atlas(atlas_directory):
-    """Locate the registration target tractography. The official ORG
-    atlases register subjects to ORG-RegAtlas-100HCP/
-    registration_atlas.vtk, which is a SIBLING directory of the
-    labeling atlas folder (ORG-800FC-100HCP), NOT the labeling
-    atlas.vtp. Search order:
+    """Accept a target file, ORG parent/folder, or a generated atlas.
 
-      1. registration_atlas.vtk/.vtp inside the atlas directory tree
-      2. registration_atlas.vtk/.vtp under the parent directory
-         (covers the official AtlasBaseFolder/ORG-RegAtlas-100HCP layout)
-      3. fallback: the labeling atlas tractography (atlas.vtp/.vtk),
-         for self-built atlases that ship no RegAtlas
+    Prefer the official ORG registration target over labeling tractography.
+    Only the known ORG sibling is searched outside the selected directory.
     """
-
-    def _find_in(root, names):
-        for walk_root, _dirs, files in os.walk(root):
-            for name in names:
-                if name in files:
-                    return os.path.join(walk_root, name)
-        return None
-
-    atlas_directory = os.path.abspath(atlas_directory)
+    directory = _atlas_path(atlas_directory)
+    if os.path.isfile(directory):
+        if os.path.splitext(directory)[1].lower() in ('.vtk', '.vtp'):
+            return directory
+        directory = os.path.dirname(directory)
     targets = ('registration_atlas.vtk', 'registration_atlas.vtp')
-
-    hit = _find_in(atlas_directory, targets)
-    if hit:
-        return hit
-
-    parent = os.path.dirname(atlas_directory)
-    hit = _find_in(parent, targets)
-    if hit:
-        return hit
-
-    return find_atlas_tractography(atlas_directory)
+    for candidate in (directory,
+                      os.path.join(directory, 'ORG-RegAtlas-100HCP'),
+                      os.path.join(os.path.dirname(directory), 'ORG-RegAtlas-100HCP')):
+        for name in targets:
+            path = os.path.join(candidate, name)
+            if os.path.isfile(path):
+                return path
+    hit = _find_atlas_file(directory, targets)
+    return hit if hit else find_atlas_tractography(directory)
 
 
 # ---------------------------------------------------------------------------
