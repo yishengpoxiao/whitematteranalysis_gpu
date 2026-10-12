@@ -6,7 +6,7 @@ and xlrd. No separate WMA installation is required; atlas data must be supplied.
 Sources are in `slicer/WMAGPU/Modules/`, release archives in `slicer/WMAGPU/dist/`,
 packaging tools in `tools/`, and validation scripts in `Testing/`.
 The current English-language release is
-`dist/WMAGPU-Slicer-5.2-2026-10-12-pipeline.zip`, including optional PyTorch setup.
+`dist/WMAGPU-Slicer-5.2-2026-10-12-parallel.zip`, including optional PyTorch setup.
 
 The local legacy path `/data/yijie/wma-GPU/slicer` is a symlink to `Modules/` for
 existing Slicer Additional module paths. Obsolete source copies, `.sx` archives,
@@ -28,6 +28,33 @@ it does not depend on this local symlink.
 | WMA Groupwise Registration | Population affine registration and registration atlas output |
 | WMA Atlas Builder | Atlas construction through multisubject spectral clustering |
 | WMA Merge & MRML | Cluster merging and scene.mrml export |
+
+Outlier removal computes independent occupied clusters in parallel. **Outlier
+workers** defaults to **Auto**, using available CPU cores and limiting GPU
+concurrency by free VRAM. Set **1** for sequential execution or choose a larger
+limit explicitly (up to the number of occupied clusters, with the GPU memory
+bound still applied). CPU workers use one distance thread each; GPU workers use
+separate CUDA streams with per-worker tile budgets. The subject is resampled once,
+and progress, event processing, and final mask assembly stay on Slicer's main
+thread. More workers can increase memory use or reduce throughput; benchmark on
+your atlas and hardware. This currently uses one GPU. Auto honors
+`WMA_CPU_THREADS` as the CPU budget when it is set.
+
+A bounded ORG benchmark (32 real reference clusters, 256 derived subject fibers,
+float64, one timing per setting after warm-up) produced identical masks and 39
+rejections at every worker count:
+
+| Workers | CPU seconds | GPU seconds |
+| --- | ---: | ---: |
+| 1 | 45.07 | 0.89 |
+| 4 | 14.51 | 1.21 |
+| 16 | 9.75 | 1.26 |
+| Auto (32 occupied clusters) | 13.52 | 1.31 |
+
+These shared-workstation measurements are not a full-pipeline speed guarantee.
+CPU benefited from cluster parallelism; this small GPU workload was faster with
+one worker. Auto chooses high concurrency, not a measured optimum. Choose 1 to
+avoid GPU scheduling overhead when it dominates.
 
 For labeling already registered tractography, use **WMA Pipeline** and uncheck
 **Register subject to atlas (affine)**. Outlier removal and anatomical tract mapping
@@ -116,6 +143,13 @@ This extension supports local Install from file and is not listed in the public
 Extensions Index.
 
 ## Validation
+
+`Testing/test_outlier_parallel.py` compares sequential/parallel CPU and CUDA masks
+against the original per-fiber algorithm, including unequal subject/reference
+cluster sizes, interleaved labels, missing/empty reference clusters, concurrent
+worker execution, main-thread callbacks, and worker failures.
+`Testing/benchmark_outliers.py` measures worker counts on a real atlas with a small
+derived subject; it does not measure a full clinical pipeline.
 
 `Testing/verify_pipeline.py` exercises the five module widgets, labeling without
 registration, anatomical mapping before the inverse transform, output files without

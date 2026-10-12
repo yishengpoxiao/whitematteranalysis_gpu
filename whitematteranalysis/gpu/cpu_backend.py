@@ -114,13 +114,15 @@ def _fiber_block_distances(q, f, threshold, distance_method, sigmasq):
 
 def _distance_matrix(Xn, Xm, threshold, distance_method='Hausdorff',
                      bilateral=False, sigmasq=6400, gpu_float32=None,
-                     tile_rows=None):
+                     tile_rows=None, number_of_jobs=None):
     """(n, P, 3) queries x (m, P, 3) fixed -> (n, m) float64 distance
     matrix (row i = query fiber i vs all fixed fibers), computed on
-    tiled blocks over threads. Results are independent of threading."""
+    tiled blocks over threads. Results are independent of threading.
+    number_of_jobs overrides the thread count without changing global settings.
+    """
 
     dtype_bytes = 8
-    threads = cpu_threads()
+    threads = cpu_threads(number_of_jobs)
     tr = tile_rows or _tile_rows(Xm.shape[0], Xn.shape[1], dtype_bytes, threads)
     n = Xn.shape[0]
 

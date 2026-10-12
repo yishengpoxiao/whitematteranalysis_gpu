@@ -343,8 +343,9 @@ def build_atlas(subject_directory, output_directory,
     if not os.path.isdir(outdir):
         os.makedirs(outdir)
 
-    use_gpu = wma.gpu.use_gpu()
-    cpu_fast = wma.gpu.config.cpu_fast_enabled()
+    supported = wma.gpu.distance.distance_supported(distance_method)
+    use_gpu = wma.gpu.use_gpu() and supported
+    cpu_fast = wma.gpu.config.cpu_fast_enabled() and supported
     cluster_local_sigmasq = outlier_sigma * outlier_sigma
     subjects_threshold = subject_percent * n_subjects
 
@@ -498,96 +499,138 @@ def remove_cluster_outliers(subject_polydata, cluster_idx, cluster_count,
                             atlas_cluster_directory, outlier_sigma=20.0,
                             std_threshold=2.0, distance_method='Mean',
                             bilateral=True, backend='auto',
-                            progress_callback=None):
-    """Reject subject fibers whose similarity to their own cluster is
-    more than `std_threshold` standard deviations below the cluster
-    mean, following bin/wm_cluster_remove_outliers.py.
+                            progress_callback=None, max_workers=0,
+                            event_callback=None):
+    """Reject outliers in independent clusters using bounded parallel workers.
 
-    Returns (fiber_mask, rejected_count): fiber_mask is 1 for kept
-    fibers, in input fiber order.
+    max_workers=0 uses available CPU cores (and a GPU memory bound), 1 is
+    sequential. GPU workers use separate CUDA streams. CPU workers each use
+    one distance thread. Progress/events and mask assembly stay on the caller.
+    Returns (fiber_mask, rejected_count), in original subject fiber order.
     """
-
+    from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
+    from contextlib import nullcontext
+    from threading import local
     import numpy
     import whitematteranalysis as wma
+    from whitematteranalysis.gpu import fiber_tensors
 
-    backend_name = resolve_backend(backend)
-    use_gpu = wma.gpu.use_gpu()
-    cpu_fast = wma.gpu.config.cpu_fast_enabled()
+    resolve_backend(backend)
+    supported = wma.gpu.distance.distance_supported(distance_method)
+    use_gpu = wma.gpu.use_gpu() and supported
+    cpu_fast = wma.gpu.config.cpu_fast_enabled() and supported
     cluster_local_sigmasq = outlier_sigma * outlier_sigma
+    labels = numpy.asarray(cluster_idx)
+    order = numpy.argsort(labels, kind='stable')
+    ids, starts = numpy.unique(labels[order], return_index=True)
+    groups = {int(c): indices for c, indices in zip(ids, numpy.split(order, starts[1:]))
+              if 0 <= c < cluster_count}
+    fiber_mask = numpy.zeros(subject_polydata.GetNumberOfLines())
+    if not groups:
+        return fiber_mask, 0
+    if max_workers < 0:
+        raise ValueError("max_workers must be nonnegative")
+    cores = len(os.sched_getaffinity(0)) if hasattr(os, 'sched_getaffinity') else (os.cpu_count() or 1)
+    if not use_gpu and wma.gpu.config.cpu_threads:
+        cores = min(cores, wma.gpu.config.cpu_threads)
+    workers = min(len(groups), max_workers or cores)
+    worker_state = local()
+    gpu_budget = None
+    if use_gpu:
+        import torch
+        from whitematteranalysis.gpu.config import get_device
+        device = get_device()
+        free_bytes, _ = torch.cuda.mem_get_info(device)
+        # Leave half of free VRAM for outputs, CUDA context, and other Slicer work.
+        workers = min(workers, max(1, free_bytes // (512 << 20)))
+        gpu_budget = max(1, int(free_bytes * 0.5) // workers)
+    if progress_callback:
+        progress_callback("Outlier removal: %d clusters, %d parallel workers (%s)" % (
+            len(groups), workers, 'GPU streams' if use_gpu else 'CPU'), 60)
 
-    n_fibers = subject_polydata.GetNumberOfLines()
-    fiber_mask = numpy.zeros(n_fibers)
-    rejected_total = 0
+    # Resample the subject once. Workers receive disjoint NumPy slices rather
+    # than repeatedly masking and reading the shared Slicer VTK input.
+    if use_gpu or cpu_fast:
+        subject_arrays = fiber_tensors.polydata_to_numpy(subject_polydata, 15)
+    else:
+        subject_clusters = {c: wma.filter.mask(subject_polydata, labels == c, verbose=False)
+                            for c in groups}
 
-    for c in range(cluster_count):
-        if progress_callback:
-            progress_callback("Outlier removal: cluster %d/%d" % (c + 1, cluster_count),
-                              60 + 35 * c // max(1, cluster_count))
-        atlas_fname = os.path.join(atlas_cluster_directory,
-                                   'cluster_%05d.vtp' % (c + 1))
-        if not os.path.isfile(atlas_fname):
-            fiber_mask[cluster_idx == c] = 1
-            continue
-        pd_atlas = wma.io.read_polydata(atlas_fname)
-        number_fibers_in_atlas_cluster = pd_atlas.GetNumberOfLines()
-        subject_sel = (cluster_idx == c)
-        if number_fibers_in_atlas_cluster == 0 or not subject_sel.any():
-            fiber_mask[subject_sel] = 1
-            continue
-
-        pd_subject_c = wma.filter.mask(subject_polydata, subject_sel,
-                                       verbose=False)
-
+    def compute(c):
+        indices = groups[c]
+        filename = os.path.join(atlas_cluster_directory, 'cluster_%05d.vtp' % (c + 1))
+        if not os.path.isfile(filename):
+            return c, indices, 0
+        atlas_pd = wma.io.read_polydata(filename)
+        n_atlas = atlas_pd.GetNumberOfLines()
+        if not n_atlas:
+            return c, indices, 0
         kwargs = dict(bilateral=bilateral, distance_method=distance_method)
-        if use_gpu:
-            cluster_distances = wma.cluster._pairwise_distance_matrix(
-                pd_atlas, 0.0, number_of_jobs=1,
-                sigmasq=cluster_local_sigmasq, use_gpu=True, **kwargs)
-        elif cpu_fast:
-            cluster_distances = wma.gpu.cpu_backend.pairwise_distance_matrix(
-                pd_atlas, 0.0, distance_method=distance_method,
-                bilateral=bilateral, sigmasq=cluster_local_sigmasq)
+        if use_gpu or cpu_fast:
+            atlas_array = fiber_tensors.polydata_to_numpy(atlas_pd, 15)
+            subject_array = subject_arrays[indices]
+            # Bound each worker's temporary distance tensors, including bilateral
+            # and forward/reversed comparisons. Full result matrices live on CPU.
+            budget = gpu_budget if use_gpu else (16 << 20)
+            tile_rows = max(1, budget // max(1, n_atlas * 15 * 8 * 12))
+            if use_gpu:
+                if not hasattr(worker_state, 'stream'):
+                    worker_state.stream = torch.cuda.Stream(device=device)
+                stream_context = torch.cuda.stream(worker_state.stream)
+            else:
+                stream_context = nullcontext()
+            with stream_context:
+                if use_gpu:
+                    matrix = wma.gpu.distance.distance_matrix_from_arrays
+                    parallel = {}
+                else:
+                    matrix = wma.gpu.cpu_backend._distance_matrix
+                    parallel = dict(number_of_jobs=1)
+                distances_atlas = matrix(atlas_array, atlas_array, 0.,
+                    sigmasq=cluster_local_sigmasq, tile_rows=tile_rows, **parallel, **kwargs)
+                distances_subject = matrix(subject_array, atlas_array, 0.,
+                    tile_rows=tile_rows, **parallel, **kwargs).T
         else:
-            cluster_distances = wma.cluster._pairwise_distance_matrix(
-                pd_atlas, 0.0, number_of_jobs=1, **kwargs)
-        cluster_similarity_atlas = wma.similarity.distance_to_similarity(
-            cluster_distances, cluster_local_sigmasq)
+            distances_atlas = wma.cluster._pairwise_distance_matrix(
+                atlas_pd, 0., number_of_jobs=1, **kwargs)
+            distances_subject = wma.cluster._rectangular_distance_matrix(
+                subject_clusters[c], atlas_pd, 0., number_of_jobs=1, **kwargs)
+        similarity_atlas = wma.similarity.distance_to_similarity(distances_atlas, cluster_local_sigmasq)
+        similarity_subject = wma.similarity.distance_to_similarity(distances_subject, cluster_local_sigmasq)
+        total_atlas = (numpy.sum(similarity_atlas, axis=1) - 1.) / n_atlas
+        total_subject = numpy.sum(similarity_subject, axis=0) / n_atlas
+        cutoff = numpy.mean(total_atlas) - std_threshold * numpy.std(total_atlas)
+        keep = total_subject >= cutoff
+        return c, indices[keep], int((~keep).sum())
 
-        if use_gpu:
-            cluster_distances_sub = wma.cluster._rectangular_distance_matrix(
-                pd_subject_c, pd_atlas, 0.0, number_of_jobs=1,
-                bilateral=bilateral, distance_method=distance_method,
-                use_gpu=True)
-        elif cpu_fast:
-            cluster_distances_sub = wma.gpu.cpu_backend.rectangular_distance_matrix(
-                pd_subject_c, pd_atlas, 0.0, distance_method=distance_method,
-                bilateral=bilateral)
-        else:
-            cluster_distances_sub = wma.cluster._rectangular_distance_matrix(
-                pd_subject_c, pd_atlas, 0.0, number_of_jobs=1,
-                bilateral=bilateral, distance_method=distance_method)
-        cluster_similarity_subject = wma.similarity.distance_to_similarity(
-            cluster_distances_sub, cluster_local_sigmasq)
+    rejected_total = 0
+    completed = 0
 
-        # p(f1) = sum over atlas f2 of p(f1|f2), normalized by cluster size
-        total_similarity_atlas = (numpy.sum(cluster_similarity_atlas, axis=1)
-                                  - 1.0) / number_fibers_in_atlas_cluster
-        total_similarity_subject = numpy.sum(cluster_similarity_subject,
-                                             axis=0) / number_fibers_in_atlas_cluster
-
-        mean_sim_atlas = numpy.mean(total_similarity_atlas)
-        cluster_std_atlas = numpy.std(total_similarity_atlas)
-        cutoff = mean_sim_atlas - std_threshold * cluster_std_atlas
-
-        keep_c = total_similarity_subject >= cutoff
-        sel_idx = numpy.nonzero(subject_sel)[0]
-        fiber_mask[sel_idx[keep_c]] = 1
-        rejected_total += int((~keep_c).sum())
-
+    def collect(result):
+        nonlocal rejected_total, completed
+        c, kept_indices, rejected = result
+        fiber_mask[kept_indices] = 1
+        rejected_total += rejected
+        completed += 1
         if progress_callback:
-            progress_callback("  cluster %d: rejecting %d/%d fibers" % (
-                c + 1, int((~keep_c).sum()), int(subject_sel.sum())), None)
+            progress_callback("Outlier removal: %d/%d clusters done; cluster %d rejected %d/%d fibers" % (
+                completed, len(groups), c + 1, rejected, len(groups[c])),
+                60 + 35 * completed // len(groups))
 
+    if workers == 1:
+        for c in groups:
+            collect(compute(c))
+            if event_callback:
+                event_callback()
+    else:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            pending = {pool.submit(compute, c) for c in groups}
+            while pending:
+                done, pending = wait(pending, timeout=0.1, return_when=FIRST_COMPLETED)
+                for future in done:
+                    collect(future.result())
+                if event_callback:
+                    event_callback()
     return fiber_mask, rejected_total
 
 

@@ -100,6 +100,12 @@ class WMAPipelineWidget(ScriptedLoadableModuleWidget):
         self.outlierCheckBox.checked = True
         form.addRow("", self.outlierCheckBox)
 
+        self.outlierWorkersSpinBox = qt.QSpinBox()
+        self.outlierWorkersSpinBox.setRange(0, 800)
+        self.outlierWorkersSpinBox.specialValueText = "Auto (available cores / GPU memory)"
+        self.outlierWorkersSpinBox.toolTip = "0: automatic parallelism; 1: sequential. GPU concurrency is bounded by free VRAM."
+        form.addRow("Outlier workers:", self.outlierWorkersSpinBox)
+
         self.anatomicalCheckBox = qt.QCheckBox("Map clusters to anatomical tracts")
         self.anatomicalCheckBox.checked = True
         form.addRow("", self.anatomicalCheckBox)
@@ -201,6 +207,8 @@ class WMAPipelineWidget(ScriptedLoadableModuleWidget):
                     fmask, rejected = _CORE.remove_cluster_outliers(
                         result['output_polydata'], result['cluster_idx'],
                         result['cluster_count'], cluster_dir, backend=backend,
+                        max_workers=self.outlierWorkersSpinBox.value,
+                        event_callback=slicer.app.processEvents,
                         progress_callback=lambda t, p: common.status(self, t, None))
                     keep = numpy.asarray(fmask) == 1
                     result['output_polydata'] = wma.filter.mask(

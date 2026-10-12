@@ -32,6 +32,7 @@ try:
     widget = widgets[0]
     widget.inputSelector.setCurrentNode(subject)
     widget.outlierCheckBox.checked = False
+    assert widget.outlierWorkersSpinBox.value == 0
     widget.fiberLengthSpinBox.value = 0.
     transform = vtk.vtkTransform()
     transform.Translate(100., 0., 0.)
@@ -78,6 +79,8 @@ try:
             run()
             assert len(results()) == 1 and results()[0].GetName() == 'WMA cluster overview'
             widget.visualizationComboBox.currentIndex = 1
+            widget.outlierCheckBox.checked = True
+            widget.outlierWorkersSpinBox.value = 4
             run()
             assert len(results()) == 1 and results()[0].GetName() == 'cluster_00001'
             assert not results()[0].GetDisplayNode().GetVisibility()
@@ -102,6 +105,13 @@ try:
         else:
             raise AssertionError('Expected node creation failure')
     assert not slicer.mrmlScene.IsBatchProcessing()
+    import unittest
+    sys.path.append(str(Path(__file__).resolve().parent))
+    import test_outlier_parallel
+    assert test_outlier_parallel.core is core
+    report = unittest.TextTestRunner(verbosity=2).run(
+        unittest.defaultTestLoader.loadTestsFromModule(test_outlier_parallel))
+    assert report.wasSuccessful(), 'Parallel outlier tests failed'
     print('PIPELINE_VISUALIZATION_VERIFIED', flush=True)
 except Exception:
     import traceback
