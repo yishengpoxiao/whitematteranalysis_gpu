@@ -57,7 +57,7 @@ See [GPU development and validation records](doc/gpu/) for tested behavior and m
 
 ## 3D Slicer extension
 
-Use the [universal installer](slicer/WMAGPU/dist/WMAGPU-Installer-2026-10-12.zip).
+Use the [universal installer](slicer/WMAGPU/dist/WMAGPU-Installer.zip).
 Extract it, run `InstallWMAGPU.py` inside the target Slicer's Python Interactor,
 and click **Install WMAGPU and required dependencies**. The installer detects
 Slicer's version and platform, installs missing scientific dependencies through

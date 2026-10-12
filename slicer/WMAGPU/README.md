@@ -5,7 +5,7 @@ and xlrd. No separate WMA installation is required; atlas data must be supplied.
 
 Sources are in `slicer/WMAGPU/Modules/`, release archives in `slicer/WMAGPU/dist/`,
 packaging tools in `tools/`, and validation scripts in `Testing/`.
-The current release is `dist/WMAGPU-Installer-2026-10-12.zip`, a universal installer
+The current release is `dist/WMAGPU-Installer.zip`, a universal installer
 that detects the running Slicer version, Python, operating system, and architecture.
 It contains pure Python sources and builds the matching extension layout locally.
 
@@ -16,7 +16,7 @@ it does not depend on this local symlink.
 
 ## Installation and use
 
-1. Extract `WMAGPU-Installer-2026-10-12.zip` on the target computer. Remove an
+1. Extract `WMAGPU-Installer.zip` on the target computer. Remove an
    older WMAGPU release in Extensions Manager and restart Slicer before installing.
 2. Open the target Slicer, then **View → Python Interactor**, and run:
 
