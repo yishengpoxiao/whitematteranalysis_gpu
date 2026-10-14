@@ -373,6 +373,10 @@ With Triton, short-vector centroid distances also use a dedicated float64 CUDA
 kernel. The direct PyTorch fallback remains available. See the
 [centroid optimization record](../../doc/gpu/progress-2026-10-15-centroids.md).
 
+GPU bilateral distances also share one launch, and CPU reference coordinates use
+a compiled-kernel layout. See the [bilateral/layout record](../../doc/gpu/progress-2026-10-15-bilateral-layout.md)
+for exact comparisons and stage timings.
+
 
 Slicer 5.2.2 on Linux was used to verify Extension Manager installation, the five current
 modules, node selection without SlicerDMRI, CPU/GPU labeling agreement, affine

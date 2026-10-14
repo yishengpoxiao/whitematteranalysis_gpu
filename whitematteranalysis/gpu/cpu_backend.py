@@ -74,7 +74,8 @@ def _pointwise_squared_distance(q, f):
     numpy.subtract(fz, qz, out=dy)
     numpy.square(dy, out=dy)
     dx += dy
-    return dx
+    # A packed fixed layout must not change the NumPy point reduction order.
+    return numpy.ascontiguousarray(dx)
 
 
 def _reduce_points(d2, distance_method, threshold, sigmasq, points_per_fiber):
@@ -143,6 +144,9 @@ def _distance_matrix(Xn, Xm, threshold, distance_method='Hausdorff',
     threads = cpu_threads(number_of_jobs)
     tr = tile_rows or _tile_rows(Xm.shape[0], Xn.shape[1], dtype_bytes, threads)
     n = Xn.shape[0]
+    # Each compiled point-distance call reads contiguous three-coordinate rows.
+    if Xn.dtype == Xm.dtype == numpy.float64 and min(n, tr) * len(Xm) >= 4096:
+        Xm = numpy.ascontiguousarray(Xm.transpose(1, 0, 2)).transpose(1, 0, 2)
 
     def compute(s, e):
         return _distance_block(Xn[s:e], Xm, threshold, distance_method, bilateral, sigmasq)
@@ -306,6 +310,8 @@ def inner_loop_objective(fixed, moving, sigmasq, chunk_rows=None, threads=None, 
 
     fixed = fixed.transpose(1, 2, 0)
     moving = moving.transpose(1, 2, 0)
+    if fixed.dtype == moving.dtype == numpy.float64 and min(n_moving, chunk_rows) * n_fixed >= 4096:
+        fixed = numpy.ascontiguousarray(fixed.transpose(1, 0, 2)).transpose(1, 0, 2)
     probability = numpy.empty(n_moving, dtype=numpy.float64)
 
     workers = min(threads, (n_moving + chunk_rows - 1) // chunk_rows)

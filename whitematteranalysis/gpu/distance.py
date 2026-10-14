@@ -101,24 +101,30 @@ def _reduce_points(d2, distance_method, threshold, sigmasq, points_per_fiber):
     return d
 
 
-def _fiber_block_distances(q, f, threshold, distance_method, sigmasq):
+def _fiber_block_distances(q, f, threshold, distance_method, sigmasq, bilateral=False):
     """One block of query fibers vs all fixed fibers, both directions,
-    (b, m) result. Matches similarity.fiber_distance without bilateral."""
+    (b, m) result. Matches similarity.fiber_distance, including bilateral mode."""
 
     points_per_fiber = q.shape[1]
     if (distance_kernel.triton is not None and q.is_cuda and q.dtype == f.dtype == torch.float64
             and q.is_contiguous() and f.is_contiguous()
             and points_per_fiber <= 32
             and distance_method in ('Mean', 'MeanSquared', 'Hausdorff')):
-        return distance_kernel.fiber_distances(q, f, threshold, distance_method)
+        return distance_kernel.fiber_distances(q, f, threshold, distance_method, bilateral)
     fwd = _reduce_points(_pointwise_squared_distance(q, f),
                          distance_method, threshold, sigmasq, points_per_fiber)
     rev = _reduce_points(_pointwise_squared_distance(q.flip(1), f),
                          distance_method, threshold, sigmasq, points_per_fiber)
 
-    if distance_method == 'StrictSimilarity':
-        return torch.maximum(fwd, rev)
-    return torch.minimum(fwd, rev)
+    combine = torch.maximum if distance_method == 'StrictSimilarity' else torch.minimum
+    distances = combine(fwd, rev)
+    del fwd, rev
+    if bilateral:
+        reflected = q.clone()
+        reflected[:, :, 0] = -reflected[:, :, 0]
+        other = _fiber_block_distances(reflected, f, threshold, distance_method, sigmasq)
+        distances = combine(distances, other)
+    return distances
 
 
 def _choose_tile_rows(n, m, points_per_fiber, dtype, device, override=None):
@@ -170,22 +176,12 @@ def _distance_matrix(Xn, Xm, threshold, distance_method='Hausdorff',
         print(f"<{__name__}> GPU distance matrix {n} x {m}, "
               f"tile {tr}, dtype {dtype}, device {device}")
 
-    # min for distances, max for StrictSimilarity (as in similarity.py:39-56)
-    block_reducer = torch.maximum if distance_method == 'StrictSimilarity' \
-        else torch.minimum
-
     s = 0
     while s < n:
         e = min(s + tr, n)
         try:
             q = torch.as_tensor(Xn[s:e], dtype=dtype, device=device)
-            d = _fiber_block_distances(q, f, threshold, distance_method, sigmasq)
-            if bilateral:
-                q_reflect = q.clone()
-                q_reflect[:, :, 0] = -q_reflect[:, :, 0]
-                d_reflect = _fiber_block_distances(q_reflect, f, threshold,
-                                                   distance_method, sigmasq)
-                d = block_reducer(d, d_reflect)
+            d = _fiber_block_distances(q, f, threshold, distance_method, sigmasq, bilateral)
         except torch.cuda.OutOfMemoryError:
             torch.cuda.empty_cache()
             tr = max(1, tr // 2)
@@ -311,21 +307,12 @@ def rectangular_similarity_tensor(input_polydata_n, input_polydata_m, threshold,
 
     tr = _choose_tile_rows(n, Xm.shape[0], Xn.shape[1], dtype, device,
                            override=tile_rows)
-    block_reducer = torch.maximum if distance_method == 'StrictSimilarity' \
-        else torch.minimum
-
     s = 0
     while s < n:
         e = min(s + tr, n)
         try:
             q = torch.as_tensor(Xn[s:e], dtype=dtype, device=device)
-            d = _fiber_block_distances(q, f, threshold, distance_method, sigmasq)
-            if bilateral:
-                q_reflect = q.clone()
-                q_reflect[:, :, 0] = -q_reflect[:, :, 0]
-                d_reflect = _fiber_block_distances(q_reflect, f, threshold,
-                                                   distance_method, sigmasq)
-                d = block_reducer(d, d_reflect)
+            d = _fiber_block_distances(q, f, threshold, distance_method, sigmasq, bilateral)
             if distance_method != 'StrictSimilarity':
                 d = torch.exp(-d / (sigma * sigma))
         except torch.cuda.OutOfMemoryError:
@@ -372,13 +359,7 @@ def iter_rectangular_similarity(input_polydata_n, input_polydata_m, threshold,
 
 def _similarity_tensor_block(queries, fixed, threshold, sigma, method, bilateral, sigmasq):
     queries = torch.as_tensor(queries, dtype=fixed.dtype, device=fixed.device)
-    distances = _fiber_block_distances(queries, fixed, threshold, method, sigmasq)
-    if bilateral:
-        reflected = queries.clone()
-        reflected[:, :, 0] = -reflected[:, :, 0]
-        other = _fiber_block_distances(reflected, fixed, threshold, method, sigmasq)
-        combine = torch.maximum if method == 'StrictSimilarity' else torch.minimum
-        distances = combine(distances, other)
+    distances = _fiber_block_distances(queries, fixed, threshold, method, sigmasq, bilateral)
     if method != 'StrictSimilarity':
         distances = torch.exp(-distances / (sigma * sigma))
     return distances

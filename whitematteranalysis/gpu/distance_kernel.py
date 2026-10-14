@@ -8,33 +8,34 @@ if triton is not None:
 
     @triton.jit
     def _values(F, Q, fi, qi, p, mask, P: tl.constexpr,
-                REVERSE: tl.constexpr, THRESHOLD2: tl.constexpr, METHOD: tl.constexpr):
-        d = registration_kernel._point_distance(F, Q, fi, qi, p, mask, P, REVERSE)
+                REVERSE: tl.constexpr, THRESHOLD2: tl.constexpr, METHOD: tl.constexpr,
+                BILATERAL: tl.constexpr = False):
+        fixed = (fi * P + p) * 3
+        query = (qi * P + (P - 1 - p if REVERSE else p)) * 3
+        x = tl.load(F + fixed, mask, other=0.)
+        qx = tl.load(Q + query, mask, other=0.)
+        dx = x - qx
+        dy = tl.load(F + fixed + 1, mask, other=0.) - tl.load(Q + query + 1, mask, other=0.)
+        dz = tl.load(F + fixed + 2, mask, other=0.) - tl.load(Q + query + 2, mask, other=0.)
+        dy2, dz2 = dy * dy, dz * dz
+        d = (dx * dx + dy2) + dz2
+        reflected = d
+        if BILATERAL:
+            rx = x + qx
+            reflected = (rx * rx + dy2) + dz2
         if THRESHOLD2 != 0:
             d = d - tl.full((), THRESHOLD2, tl.float64)
+            reflected = reflected - tl.full((), THRESHOLD2, tl.float64)
             d = tl.where(d < 0., 0., d)
+            reflected = tl.where(reflected < 0., 0., reflected)
         if METHOD == 'Mean':
             d = libdevice.sqrt_rn(d)
-        return d
+            reflected = libdevice.sqrt_rn(reflected)
+        return d, reflected
 
     @triton.jit
-    def _distances(F, Q, Output, NF, COUNT,
-                   P: tl.constexpr, WIDTH: tl.constexpr, STEPS: tl.constexpr,
-                   THRESHOLD2: tl.constexpr, METHOD: tl.constexpr, BLOCK: tl.constexpr):
-        pair = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
-        p = tl.arange(0, WIDTH)[None, :]
-        fi, qi = pair[:, None] % NF, pair[:, None] // NF
-        mask = pair[:, None] < COUNT
-        a = _values(F, Q, fi, qi, p, mask, P, False, THRESHOLD2, METHOD)
-        b = _values(F, Q, fi, qi, p, mask, P, True, THRESHOLD2, METHOD)
-        if P > WIDTH:
-            mask2 = mask & (p + WIDTH < P)
-            a2 = _values(F, Q, fi, qi, p + WIDTH, mask2, P, False, THRESHOLD2, METHOD)
-            b2 = _values(F, Q, fi, qi, p + WIDTH, mask2, P, True, THRESHOLD2, METHOD)
-            if METHOD == 'Hausdorff':
-                a, b = tl.maximum(a, a2, propagate_nan=tl.PropagateNan.ALL), tl.maximum(b, b2, propagate_nan=tl.PropagateNan.ALL)
-            else:
-                a, b = a + a2, b + b2
+    def _reduce_orientations(a, b, P: tl.constexpr, WIDTH: tl.constexpr,
+                              STEPS: tl.constexpr, METHOD: tl.constexpr, BLOCK: tl.constexpr):
         for step in tl.static_range(STEPS):
             al, ar = tl.split(tl.reshape(a, (BLOCK, WIDTH // (1 << (step + 1)), 2)))
             bl, br = tl.split(tl.reshape(b, (BLOCK, WIDTH // (1 << (step + 1)), 2)))
@@ -48,7 +49,36 @@ if triton is not None:
             a, b = a * inv, b * inv
         if METHOD == 'Mean':
             a, b = a * a, b * b
-        result = tl.minimum(a, b, propagate_nan=tl.PropagateNan.ALL)
+        return tl.minimum(a, b, propagate_nan=tl.PropagateNan.ALL)
+
+    @triton.jit
+    def _distances(F, Q, Output, NF, COUNT,
+                   P: tl.constexpr, WIDTH: tl.constexpr, STEPS: tl.constexpr,
+                   THRESHOLD2: tl.constexpr, METHOD: tl.constexpr, BLOCK: tl.constexpr,
+                   BILATERAL: tl.constexpr = False):
+        pair = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
+        p = tl.arange(0, WIDTH)[None, :]
+        fi, qi = pair[:, None] % NF, pair[:, None] // NF
+        mask = pair[:, None] < COUNT
+        a, ra = _values(F, Q, fi, qi, p, mask, P, False, THRESHOLD2, METHOD, BILATERAL)
+        b, rb = _values(F, Q, fi, qi, p, mask, P, True, THRESHOLD2, METHOD, BILATERAL)
+        if P > WIDTH:
+            mask2 = mask & (p + WIDTH < P)
+            a2, ra2 = _values(F, Q, fi, qi, p + WIDTH, mask2, P, False, THRESHOLD2, METHOD, BILATERAL)
+            b2, rb2 = _values(F, Q, fi, qi, p + WIDTH, mask2, P, True, THRESHOLD2, METHOD, BILATERAL)
+            if METHOD == 'Hausdorff':
+                a, b = tl.maximum(a, a2, propagate_nan=tl.PropagateNan.ALL), tl.maximum(b, b2, propagate_nan=tl.PropagateNan.ALL)
+            else:
+                a, b = a + a2, b + b2
+            if BILATERAL:
+                if METHOD == 'Hausdorff':
+                    ra, rb = tl.maximum(ra, ra2, propagate_nan=tl.PropagateNan.ALL), tl.maximum(rb, rb2, propagate_nan=tl.PropagateNan.ALL)
+                else:
+                    ra, rb = ra + ra2, rb + rb2
+        result = _reduce_orientations(a, b, P, WIDTH, STEPS, METHOD, BLOCK)
+        if BILATERAL:
+            reflected = _reduce_orientations(ra, rb, P, WIDTH, STEPS, METHOD, BLOCK)
+            result = tl.minimum(result, reflected, propagate_nan=tl.PropagateNan.ALL)
         tl.store(Output + pair, result, pair < COUNT)
 
     @triton.jit
@@ -88,7 +118,7 @@ def centroid_distances(queries, centroids):
     return output
 
 
-def fiber_distances(queries, fixed, threshold, method):
+def fiber_distances(queries, fixed, threshold, method, bilateral=False):
     import torch
 
     shape = (queries.shape[0], fixed.shape[0])
@@ -100,5 +130,5 @@ def fiber_distances(queries, fixed, threshold, method):
         _distances[(triton.cdiv(output.numel(), block),)](
             fixed, queries, output, shape[1], output.numel(),
             P=points, WIDTH=1 << steps, STEPS=steps, THRESHOLD2=threshold * threshold,
-            METHOD=method, BLOCK=block, num_warps=1, enable_fp_fusion=False)
+            METHOD=method, BLOCK=block, BILATERAL=bilateral, num_warps=1, enable_fp_fusion=False)
     return output

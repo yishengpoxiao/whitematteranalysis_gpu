@@ -1,5 +1,6 @@
 """Fused distance arithmetic retains eager PyTorch values and fallback paths."""
 import unittest
+from itertools import product
 from unittest.mock import patch
 import numpy as np
 import whitematteranalysis as wma
@@ -15,13 +16,15 @@ class DistanceKernelTests(unittest.TestCase):
             for dtype in (torch.float64, torch.float32):
                 fixed = torch.tensor(rng.normal(size=(37, points, 3)) * 40., dtype=dtype, device='cuda')
                 moving = torch.tensor(rng.normal(size=(5, points, 3)) * 40., dtype=dtype, device='cuda')
-                for method in distance.SUPPORTED_DISTANCE_METHODS:
+                before = moving.clone()
+                for method, bilateral in product(distance.SUPPORTED_DISTANCE_METHODS, (False, True)):
                     for threshold in (0., .1, 2., 100.):
-                        with self.subTest(points=points, dtype=dtype, method=method, threshold=threshold):
-                            actual = distance._fiber_block_distances(moving, fixed, threshold, method, 6400.)
+                        with self.subTest(points=points, dtype=dtype, method=method, threshold=threshold, bilateral=bilateral):
+                            actual = distance._fiber_block_distances(moving, fixed, threshold, method, 6400., bilateral)
                             with patch.object(distance_kernel, 'triton', None):
-                                expected = distance._fiber_block_distances(moving, fixed, threshold, method, 6400.)
+                                expected = distance._fiber_block_distances(moving, fixed, threshold, method, 6400., bilateral)
                             self.assertTrue(torch.equal(actual, expected))
+                self.assertTrue(torch.equal(moving, before))
 
     def test_special_values_and_strides(self):
         import torch
@@ -31,10 +34,10 @@ class DistanceKernelTests(unittest.TestCase):
             moving = torch.zeros((3, 10, 3), dtype=torch.float64, device='cuda')
             if strided:
                 fixed, moving = fixed[:, ::2], moving[:, ::2]
-            for method in distance.SUPPORTED_DISTANCE_METHODS:
-                actual = distance._fiber_block_distances(moving, fixed, .1, method, 6400.)
+            for method, bilateral in product(distance.SUPPORTED_DISTANCE_METHODS, (False, True)):
+                actual = distance._fiber_block_distances(moving, fixed, .1, method, 6400., bilateral)
                 with patch.object(distance_kernel, 'triton', None):
-                    expected = distance._fiber_block_distances(moving, fixed, .1, method, 6400.)
+                    expected = distance._fiber_block_distances(moving, fixed, .1, method, 6400., bilateral)
                 torch.testing.assert_close(actual, expected, rtol=0., atol=0., equal_nan=True)
 
     def test_selected_device(self):
@@ -45,8 +48,8 @@ class DistanceKernelTests(unittest.TestCase):
         selected = (previous + 1) % torch.cuda.device_count()
         fixed = torch.ones((7, 10, 3), dtype=torch.float64, device=selected)
         moving = torch.zeros((3, 10, 3), dtype=torch.float64, device=selected)
-        actual = distance._fiber_block_distances(moving, fixed, .1, 'Mean', 6400.)
+        actual = distance._fiber_block_distances(moving, fixed, .1, 'Mean', 6400., bilateral=True)
         with patch.object(distance_kernel, 'triton', None):
-            expected = distance._fiber_block_distances(moving, fixed, .1, 'Mean', 6400.)
+            expected = distance._fiber_block_distances(moving, fixed, .1, 'Mean', 6400., bilateral=True)
         self.assertTrue(torch.equal(actual, expected))
         self.assertEqual(torch.cuda.current_device(), previous)

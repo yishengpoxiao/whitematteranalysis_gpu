@@ -72,6 +72,10 @@ An optional short-vector CUDA kernel also accelerates nearest-centroid distances
 without changing float64 results. See the
 [centroid optimization measurements](doc/gpu/progress-2026-10-15-centroids.md).
 
+GPU bilateral comparisons share one fused launch; compiled CPU distances read
+packed reference coordinates. See the
+[bilateral and layout measurements](doc/gpu/progress-2026-10-15-bilateral-layout.md).
+
 ## 3D Slicer extension
 
 Use the [universal installer](slicer/WMAGPU/dist/WMAGPU-Installer.zip).

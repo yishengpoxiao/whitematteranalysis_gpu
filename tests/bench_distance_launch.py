@@ -11,7 +11,7 @@ import torch
 import vtk
 from vtk.util.numpy_support import vtk_to_numpy
 import whitematteranalysis as wma
-from whitematteranalysis.gpu import distance, distance_kernel
+from whitematteranalysis.gpu import distance
 from test_output_pipeline import baseline_module
 
 
@@ -32,22 +32,33 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--baseline', default='710f7d4')
     parser.add_argument('--repeat', type=int, default=5)
+    parser.add_argument('--bilateral', action='store_true')
     parser.add_argument('--input')
     parser.add_argument('--atlas')
     parser.add_argument('--fibers', type=int, default=100000)
     parser.add_argument('--output', required=True)
     args = parser.parse_args()
     original = baseline_module('whitematteranalysis.gpu._launchbaseline',
-                               'gpu/distance_kernel.py', args.baseline)
-    report = dict(baseline=args.baseline, distance={})
+                               'gpu/distance.py', args.baseline)
+    original.distance_kernel = baseline_module('whitematteranalysis.gpu._launchkernelbaseline',
+                                               'gpu/distance_kernel.py', args.baseline)
+    report = dict(baseline=args.baseline, bilateral=args.bilateral, distance={})
     torch.manual_seed(42)
     for points in (10, 15, 20):
         fixed = torch.randn((2500, points, 3), dtype=torch.float64, device=wma.gpu.get_device())*40
         queries = torch.randn((2048, points, 3), dtype=torch.float64, device=wma.gpu.get_device())*40
         for method in ('Mean', 'MeanSquared', 'Hausdorff'):
+            def previous():
+                result = original._fiber_block_distances(queries, fixed, 2., method, 6400.)
+                if args.bilateral:
+                    reflected = queries.clone()
+                    reflected[:, :, 0] *= -1
+                    result = torch.minimum(result, original._fiber_block_distances(
+                        reflected, fixed, 2., method, 6400.))
+                return result
             outputs, timings = compare([
-                lambda: original.fiber_distances(queries, fixed, 2., method),
-                lambda: distance_kernel.fiber_distances(queries, fixed, 2., method)], args.repeat)
+                previous, lambda: distance._fiber_block_distances(
+                    queries, fixed, 2., method, 6400., args.bilateral)], args.repeat)
             assert torch.equal(*outputs)
             name = '%s_P%d' % (method, points)
             report['distance'][name] = timings
@@ -61,10 +72,10 @@ def main():
         def classify(module):
             subject = vtk.vtkPolyData()
             subject.ShallowCopy(data)
-            with patch.object(distance, 'distance_kernel', module):
+            with patch.object(wma.gpu, 'distance', module):
                 return wma.cluster.spectral_atlas_label(subject, atlas, use_gpu=True)
         outputs, timings = compare([lambda: classify(original),
-                                    lambda: classify(distance_kernel)], args.repeat)
+                                    lambda: classify(distance)], args.repeat)
         np.testing.assert_array_equal(outputs[0][1], outputs[1][1])
         np.testing.assert_array_equal(outputs[0][3], outputs[1][3])
         for index in range(outputs[0][0].GetCellData().GetNumberOfArrays()):

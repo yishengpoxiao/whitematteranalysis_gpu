@@ -40,14 +40,16 @@ class CPUTilingTests(unittest.TestCase):
     def test_parallel_objective_matches_original(self):
         rng = np.random.RandomState(22)
         for points in (1, 7, 10, 15, 20):
-            fixed, moving = rng.normal(size=(3, 31, points)), rng.normal(size=(3, 17, points))
-            for sigma in (1e-5, 100., 1e6):
-                expected = wma.register_two_subjects.inner_loop_objective(fixed, moving, sigma)
-                for workers in (1, 4):
-                    with ThreadPoolExecutor(max_workers=workers) as pool:
-                        actual = cpu.inner_loop_objective(fixed, moving, sigma,
-                            chunk_rows=3, threads=workers, executor=pool)
-                    self.assertEqual(actual, expected)
+            for n_fixed, n_moving, rows in ((31, 17, 3), (257, 37, 16)):
+                fixed = rng.normal(size=(3, n_fixed, points))
+                moving = rng.normal(size=(3, n_moving, points))
+                for sigma in (1e-5, 100., 1e6):
+                    expected = wma.register_two_subjects.inner_loop_objective(fixed, moving, sigma)
+                    for workers in (1, 4):
+                        with ThreadPoolExecutor(max_workers=workers) as pool:
+                            actual = cpu.inner_loop_objective(fixed, moving, sigma,
+                                chunk_rows=rows, threads=workers, executor=pool)
+                        self.assertEqual(actual, expected)
 
     def test_tiled_distance_matches_original_and_limits_temporaries(self):
         rng = np.random.RandomState(21)
