@@ -45,6 +45,12 @@ nine distinct transforms both pass. A shell catalogue test removes cluster 42
 while retaining cluster 800 and confirms that resume detection rejects the
 incomplete set.
 
+The universal installer bundles source revision `c9c622c`. An isolated Linux
+Slicer 5.2.2 installation verifies the five pages, CPU/CUDA labeling,
+registration and core outputs. Both codec round-trip tests and invalid-setting
+checks pass against installed WMA code. All 28 bundled/installed WMA Python
+files match committed source bytes. No optional PyTorch download is performed.
+
 ```bash
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.:tests WMA_VTP_COMPRESSION=lz4 \
   python -m unittest test_cli_file_stages -v
