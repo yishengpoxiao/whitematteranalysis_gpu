@@ -360,6 +360,11 @@ and fuses GPU registration probabilities without changing float64 precision.
 See the [CPU/GPU optimization record](../../doc/gpu/progress-2026-10-14-streaming.md)
 for correctness checks and bounded timings. No additional dependencies are needed.
 
+GPU labeling also performs normalization and nearest-centroid lookup on CUDA,
+including without Triton. With Triton, affine registration reuses a fused transform
+and matrix/coordinate buffers. See the [GPU continuation record](../../doc/gpu/progress-2026-10-15-gpu.md)
+for real-subject classification and bounded registration comparisons.
+
 
 Slicer 5.2.2 on Linux was used to verify Extension Manager installation, the five current
 modules, node selection without SlicerDMRI, CPU/GPU labeling agreement, affine

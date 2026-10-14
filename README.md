@@ -60,6 +60,10 @@ fuses distance and probability calculations when Triton is available. See the
 [CPU/GPU optimization measurements](doc/gpu/progress-2026-10-14-streaming.md)
 for numerical checks, stage timings, and their scope.
 
+GPU labeling keeps normalization and nearest-centroid selection on CUDA, and
+affine registration reuses a fused transform when Triton is available. See the
+[latest GPU measurements](doc/gpu/progress-2026-10-15-gpu.md).
+
 ## 3D Slicer extension
 
 Use the [universal installer](slicer/WMAGPU/dist/WMAGPU-Installer.zip).

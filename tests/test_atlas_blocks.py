@@ -27,6 +27,38 @@ def polydata(count):
 
 @unittest.skipUnless(wma.gpu.available(), 'CUDA is required')
 class AtlasTests(unittest.TestCase):
+    def test_negative_rows_and_input_preservation(self):
+        import torch
+        original = baseline_module('whitematteranalysis.gpu._packedbaseline',
+                                   'gpu/linalg.py', 'cffed63')
+        rng = np.random.RandomState(43)
+        atlas = types.SimpleNamespace(number_of_eigenvectors=3,
+            row_sum_1=np.ones(11), row_sum_matrix=-2. * np.ones(11),
+            e_vec=rng.uniform(.1, 1, (11, 11)), e_val=np.arange(1., 12.),
+            e_vec_norm=np.ones(11), centroids=rng.uniform(0, 2, (5, 3)))
+        similarities = torch.full((11, 7), .5, dtype=torch.float64, device='cuda')
+        before = similarities.clone()
+        expected = original.atlas_label_embedding(similarities, atlas)
+        actual = linalg.atlas_label_embedding(similarities, atlas)
+        self.assertTrue(torch.equal(similarities, before))
+        for a, b in zip(expected, actual):
+            np.testing.assert_allclose(a, b, rtol=1e-12, atol=1e-12)
+        np.testing.assert_array_equal(actual[1], expected[1])
+        np.testing.assert_array_equal(actual[3][11:], .1)
+        atlas.centroids = np.stack((actual[0][0], actual[0][0], actual[0][0] + 1.))
+        tied = linalg.atlas_label_embedding(similarities, atlas)
+        self.assertEqual(tied[1][0], 0)
+        self.assertEqual(tied[2][0], 0.)
+        atlas.centroids[0, 0] = np.nan
+        for implementation in (original, linalg):
+            with self.assertRaises(ValueError):
+                implementation.atlas_label_embedding(similarities, atlas)
+        atlas.centroids[0, 0] = 0.
+        atlas.row_sum_matrix[:] = -1.
+        for implementation in (original, linalg):
+            with self.assertRaises(ValueError):
+                implementation.atlas_label_embedding(similarities, atlas)
+
     def test_streamed_results(self):
         import torch
         original = baseline_module('whitematteranalysis.gpu._oldlinalg', 'gpu/linalg.py')

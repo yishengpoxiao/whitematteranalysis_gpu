@@ -15,6 +15,31 @@ from whitematteranalysis.register_two_subjects import (
 
 @unittest.skipUnless(wma.gpu.available(), 'CUDA is required')
 class RegistrationTests(unittest.TestCase):
+    def test_empty_moving_objective(self):
+        objective = gpu.AffineObjective(np.zeros((3, 5, 10)), np.zeros((3, 0, 10)))
+        x = np.array([0., 0., 0., 0., 0., 0., 1., 1., 1., 0., 0., 0., 0., 0., 0.])
+        self.assertEqual(objective(x, [1]*4, 20.), 0.)
+
+    def test_resident_affine_transform_matches_vtk(self):
+        import torch
+        if registration_kernel.triton is None:
+            self.skipTest('Triton is required')
+        rng = np.random.RandomState(44)
+        for points in (1, 3, 10, 15, 50):
+            fixed = rng.normal(size=(3, 31, points)) * 40.
+            moving = (rng.normal(size=(3, 34, points * 2)) * 40.)[:, ::2, ::2]
+            before = moving.copy()
+            objective = gpu.AffineObjective(fixed, moving)
+            x = np.array([5., -3., 2., 4., -2., 1., 1.02, .98, 1.01,
+                          1., -1., .5, -.5, 2., -2.])
+            for mode in ([1]*4, [1, 1, 0, 0], [0, 1, 0, 0], [0, 0, 1, 1]):
+                actual = objective(x, mode, 20.)
+                expected = transform_fiber_array_numpy(moving, x, mode)
+                np.testing.assert_array_equal(objective.transformed.cpu().numpy(), expected.transpose(1, 2, 0))
+                self.assertEqual(actual, gpu.objective_value(fixed, moving, x, mode, 20.))
+                x[0] += .1  # Exercise matrix/buffer reuse between evaluations.
+            np.testing.assert_array_equal(moving, before)
+
     def test_eager_objective_matches_committed_baseline(self):
         import torch
         from test_output_pipeline import baseline_module
@@ -102,6 +127,13 @@ class RegistrationTests(unittest.TestCase):
         with patch.object(registration_kernel, 'triton', None):
             expected = gpu._pairwise_probability(fixed, moving, 100.)
         self.assertTrue(torch.equal(actual, expected))
+        self.assertEqual(torch.cuda.current_device(), previous)
+        objective = gpu.AffineObjective(fixed.cpu().numpy().transpose(2, 0, 1),
+            moving.cpu().numpy().transpose(2, 0, 1), device=torch.device('cuda', selected))
+        x = np.array([0., 0., 0., 0., 0., 0., 1., 1., 1., 0., 0., 0., 0., 0., 0.])
+        objective(x, [1]*4, 10.)
+        if registration_kernel.triton is not None:
+            self.assertEqual(objective.transformed.device.index, selected)
         self.assertEqual(torch.cuda.current_device(), previous)
 
     def test_out_of_memory_retries_and_terminates(self):

@@ -10,6 +10,33 @@ except ImportError:
 
 if triton is not None:
     @triton.jit
+    def _affine_points(Moving, Matrix, Output, COUNT, BLOCK: tl.constexpr):
+        point = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
+        mask = point < COUNT
+        x = tl.load(Moving + point, mask, other=0.)
+        y = tl.load(Moving + COUNT + point, mask, other=0.)
+        z = tl.load(Moving + 2 * COUNT + point, mask, other=0.)
+        for axis in tl.static_range(3):
+            value = (tl.load(Matrix + 4 * axis) * x + tl.load(Matrix + 4 * axis + 1) * y)
+            value = value + tl.load(Matrix + 4 * axis + 2) * z
+            value = value + tl.load(Matrix + 4 * axis + 3)
+            tl.store(Output + 3 * point + axis, value, mask)
+
+
+def affine_transform(moving, matrix, output):
+    """Write contiguous (N, P, 3) points from (3, N, P) coordinates in one launch."""
+    import torch
+
+    count = moving.shape[1] * moving.shape[2]
+    if count == 0:
+        return
+    with torch.cuda.device(moving.device):
+        _affine_points[(triton.cdiv(count, 128),)](
+            moving, matrix, output, count, BLOCK=128, enable_fp_fusion=False)
+
+
+if triton is not None:
+    @triton.jit
     def _squared_distances(F, M, Forward, Reverse, NF,
                            P: tl.constexpr, BLOCK: tl.constexpr):
         tiles = tl.cdiv(NF * P, BLOCK)

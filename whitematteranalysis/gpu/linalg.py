@@ -97,65 +97,64 @@ def atlas_label_embedding(B, atlas):
     row_sum and B_col_sums feed _format_output_polydata.
     """
 
-    import scipy.cluster.vq
-
-    embed, rows, columns = _atlas_embedding_block(B, atlas, _prepare_atlas(atlas))
-    labels, distances = scipy.cluster.vq.vq(embed, atlas.centroids)
+    embed, rows, columns, labels, distances = _atlas_embedding_block(B, atlas, _prepare_atlas(atlas))
     return embed, labels, distances, numpy.concatenate((atlas.row_sum_1, rows)), columns
 
 
 def _prepare_atlas(atlas):
     dev = get_device()
     count = atlas.number_of_eigenvectors + 1
+    if not numpy.isfinite(atlas.centroids).all():
+        raise ValueError('array must not contain infs or NaNs')
     return tuple(_as_gpu(a, dev) for a in (
         atlas.row_sum_matrix, atlas.e_vec[:, -count:],
         numpy.divide(1., atlas.e_val[-count:]), atlas.e_vec_norm[-count:],
-        numpy.sqrt(numpy.divide(1., atlas.row_sum_1))))
+        numpy.sqrt(numpy.divide(1., atlas.row_sum_1)), atlas.centroids))
 
 
 def _atlas_embedding_block(B, atlas, prepared):
+    """Normalize, embed and label on CUDA; copy only compact results to host."""
     dev = get_device()
-    rm, Eg, recip, norm, dhat_a = prepared
+    rm, Eg, recip, norm, dhat_a, centroids = prepared
     Bg = B.to(device=dev, dtype=torch.float64) if torch.is_tensor(B) else _as_gpu(B, dev)
-    row_sum_2 = (Bg.sum(0) + rm @ Bg).cpu().numpy()
-    if numpy.any(row_sum_2 <= 0):
-        print(f"<{__name__}> Warning: negative row sum approximations:",
-              numpy.count_nonzero(row_sum_2 <= 0))
-        row_sum_2[row_sum_2 < 0] = 0.1
-    dhat_b = _as_gpu(numpy.sqrt(numpy.divide(1., row_sum_2)), dev)
+    row_sum_2 = Bg.sum(0) + rm @ Bg
+    dhat_b = torch.sqrt(torch.reciprocal(torch.where(row_sum_2 < 0, .1, row_sum_2)))
     Bg = Bg * (dhat_a[:, None] * dhat_b[None, :])
     b_col_sums = Bg.sum(0)
     V = ((Bg.t() @ Eg) * recip[None, :]) / norm[None, :]
-    embed = torch.stack([V[:, -(i + 2)] / V[:, -1]
-                         for i in range(atlas.number_of_eigenvectors)], dim=1).cpu().numpy()
-    return embed, row_sum_2, b_col_sums.cpu().numpy()
+    embed = V[:, :-1].flip(1) / V[:, -1:]
+    del Bg
+    # Direct differences avoid cancellation from the squared-norm GEMM formula.
+    # min chooses the first centroid on a tie, matching scipy.cluster.vq.vq.
+    distances, labels = torch.cdist(embed, centroids,
+        compute_mode='donot_use_mm_for_euclid_dist').min(1)
+    # One device-to-host transfer replaces three transfers and the row-sum
+    # upload. Keep the warning on the CPU, after results are already available.
+    host = torch.cat((embed, row_sum_2[:, None], b_col_sums[:, None],
+                      labels[:, None].to(torch.float64), distances[:, None]), dim=1).cpu().numpy()
+    rows = host[:, -4].copy()
+    if numpy.any(rows <= 0):
+        print(f"<{__name__}> Warning: negative row sum approximations:",
+              numpy.count_nonzero(rows <= 0))
+        rows[rows < 0] = 0.1
+    if not numpy.isfinite(host[:, :-4]).all():
+        raise ValueError('array must not contain infs or NaNs')
+    return (host[:, :-4].copy(), rows, host[:, -3].copy(),
+            host[:, -2].astype(numpy.int32), host[:, -1].copy())
 
 
 def atlas_label_embedding_blocks(blocks, atlas, number_fibers):
     """Embed each input block without retaining the full similarity or V matrices."""
-    from concurrent.futures import ThreadPoolExecutor
-    import scipy.cluster.vq
-
     prepared = _prepare_atlas(atlas)
     embed = numpy.empty((number_fibers, atlas.number_of_eigenvectors))
     labels = numpy.empty(number_fibers, dtype=numpy.int32)
     distances = numpy.empty(number_fibers)
     rows = numpy.empty(number_fibers)
     columns = numpy.empty(number_fibers)
-    # One CPU classification overlaps the next GPU block; no GPU queue grows.
-    pending = None
-    with ThreadPoolExecutor(max_workers=1) as pool:
-        for start, block in blocks:
-            end = start + block.shape[1]
-            e, r, b = _atlas_embedding_block(block, atlas, prepared)
-            embed[start:end], rows[start:end], columns[start:end] = e, r, b
-            if pending is not None:
-                begin, stop, future = pending
-                labels[begin:stop], distances[begin:stop] = future.result()
-            pending = (start, end, pool.submit(scipy.cluster.vq.vq,
-                                              embed[start:end], atlas.centroids))
-            del block
-        if pending is not None:
-            begin, stop, future = pending
-            labels[begin:stop], distances[begin:stop] = future.result()
+    for start, block in blocks:
+        end = start + block.shape[1]
+        e, r, b, idx, dist = _atlas_embedding_block(block, atlas, prepared)
+        embed[start:end], rows[start:end], columns[start:end] = e, r, b
+        labels[start:end], distances[start:end] = idx, dist
+        del block
     return embed, labels, distances, numpy.concatenate((atlas.row_sum_1, rows)), columns

@@ -194,8 +194,23 @@ class AffineObjective:
         self.device = device if device is not None else get_device()
         self.fixed = _prepare_fixed(fixed, self.device, torch.float64)
         self.moving = torch.as_tensor(moving, dtype=torch.float64, device=self.device)
+        if registration_kernel.triton is not None and self.moving.is_cuda:
+            self.moving = self.moving.contiguous()
+            self.host_matrix = torch.empty((4, 4), dtype=torch.float64, pin_memory=True)
+            self.matrix = torch.empty((4, 4), dtype=torch.float64, device=self.device)
+            self.transformed = torch.empty((moving.shape[1], moving.shape[2], 3),
+                                           dtype=torch.float64, device=self.device)
 
     def __call__(self, transform, mode, sigma):
-        moved = _transform_fiber_tensor(self.moving, transform, mode, self.device)
-        moved = moved.permute(1, 2, 0).contiguous()
+        if registration_kernel.triton is not None and self.moving.is_cuda:
+            matrix = transform_matrix_from_vtk(transform, mode)
+            # The preceding call returned a host scalar, so the optimizer can
+            # safely reuse these buffers for its next sequential evaluation.
+            self.host_matrix.copy_(torch.from_numpy(matrix))
+            self.matrix.copy_(self.host_matrix, non_blocking=True)
+            registration_kernel.affine_transform(self.moving, self.matrix, self.transformed)
+            moved = self.transformed
+        else:
+            moved = _transform_fiber_tensor(self.moving, transform, mode, self.device)
+            moved = moved.permute(1, 2, 0).contiguous()
         return _inner_loop_objective(self.fixed, moved, sigma * sigma, self.device)
