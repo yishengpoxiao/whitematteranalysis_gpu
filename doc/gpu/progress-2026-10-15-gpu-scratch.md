@@ -59,3 +59,18 @@ sigma-squared, exact self distances and NaN/infinite coordinates. Original
 input tensors remain identical. Five CUDA distance tests also compare the
 unchanged fused kernel against the new eager reference and verify selected
 CUDA devices. Python 3.8 and PyTorch 2.4.1+cu121 are used for source checks.
+
+Eight additional source integration checks pass for streamed atlas embeddings,
+float32 similarities, laterality, adaptive OOM retries, GPU atlas probability
+caching and parallel outlier CUDA streams. This gives 13 successful CUDA checks.
+
+## Installed delivery
+
+The date-free universal installer is rebuilt from `0990599` and installed in
+an isolated native Slicer 5.2.2 environment. All 13 targeted CUDA checks pass
+against the installed vendor sources with NumPy 1.23.4, SciPy 1.9.2,
+PyTorch 2.4.1+cu121 and VTK 9.1.0, with no skipped tests. In another fresh Slicer
+process all five pages load, CPU/GPU atlas labels agree, registration works and
+four core atlas/groupwise tests pass. All 100 library/module sources in the
+installer and actual installation match the repository byte-for-byte. The
+delivered archive also retains the preceding validated CPU point-plane changes.
