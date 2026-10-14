@@ -18,6 +18,55 @@ def fiber_array(values):
 
 
 class CPUTilingTests(unittest.TestCase):
+    def test_point_major_sum_order(self):
+        rng = np.random.RandomState(52)
+        with np.errstate(all='ignore'):
+            for points in list(range(1, 130)) + [257, 511, 512, 513, 1024]:
+                for scale in (1e-300, 1., 1e300):
+                    values = rng.lognormal(0., 10., (points, 3, 17)) * scale
+                    values[0, 0, :3] = [0., np.inf, np.nan]
+                    expected = values.transpose(1, 2, 0).copy().sum(-1)
+                    np.testing.assert_array_equal(cpu._sum_point_major(values), expected)
+
+    def test_point_major_metrics_and_extremes(self):
+        from test_output_pipeline import baseline_module
+        original = baseline_module('whitematteranalysis.gpu._plane_baseline', 'gpu/cpu_backend.py', '592eefa')
+        rng = np.random.RandomState(53)
+        with np.errstate(all='ignore'), warnings.catch_warnings():
+            warnings.simplefilter('ignore', RuntimeWarning)
+            for points in (5, 8, 15, 20, 50, 128, 129):
+                for dtype, scale in ((np.float32, 1.), (np.float64, 1e-150),
+                                     (np.float64, 1.), (np.float64, 1e160)):
+                    queries = (rng.normal(size=(17, points, 3)) * scale).astype(dtype)
+                    fixed = (rng.normal(size=(257, points, 3)) * scale).astype(dtype)
+                    queries[-1, 0, 0], fixed[-1, 0, 0] = np.nan, np.inf
+                    before_queries, before_fixed = queries.copy(), fixed.copy()
+                    for method in ('Mean', 'MeanSquared', 'Hausdorff', 'StrictSimilarity'):
+                        for threshold in (0., .1):
+                            for bilateral in (False, True):
+                                expected = original._distance_matrix(queries, fixed, threshold, method, bilateral,
+                                    tile_rows=16, number_of_jobs=1)
+                                actual = cpu._distance_matrix(queries, fixed, threshold, method, bilateral,
+                                    tile_rows=16, number_of_jobs=4)
+                                np.testing.assert_array_equal(actual, expected)
+                    np.testing.assert_array_equal(queries, before_queries)
+                    np.testing.assert_array_equal(fixed, before_fixed)
+
+    def test_point_major_strict_special_parameters(self):
+        from test_output_pipeline import baseline_module
+        original = baseline_module('whitematteranalysis.gpu._strictplane_baseline', 'gpu/cpu_backend.py', '592eefa')
+        rng = np.random.RandomState(55)
+        fixed = rng.normal(size=(257, 15, 3))
+        queries = fixed[:17].copy()
+        with np.errstate(all='ignore'):
+            for threshold in (0., .1, np.inf, np.nan):
+                for sigma in (1e-5, 100., 1e6, 0., -1., np.inf, np.nan):
+                    expected = original._distance_matrix(queries, fixed, threshold, 'StrictSimilarity', True,
+                        sigmasq=sigma, tile_rows=16, number_of_jobs=1)
+                    actual = cpu._distance_matrix(queries, fixed, threshold, 'StrictSimilarity', True,
+                        sigmasq=sigma, tile_rows=16, number_of_jobs=1)
+                    np.testing.assert_array_equal(actual, expected)
+
     def test_zero_threshold_mean_matches_original(self):
         rng = np.random.RandomState(24)
         with np.errstate(all='ignore'), warnings.catch_warnings():

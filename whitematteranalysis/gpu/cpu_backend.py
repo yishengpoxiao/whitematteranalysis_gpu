@@ -8,7 +8,8 @@ runs everywhere numpy runs (no torch needed, e.g. inside 3D Slicer).
 
 It preserves the original per-fiber arithmetic and point reduction order
 in similarity.py/cluster.py. Large float64 tiles use SciPy's compiled
-three-coordinate squared distances; smaller tiles use NumPy. Threshold
+three-coordinate distances and reduce point planes directly; smaller tiles use
+NumPy. Mean reductions retain NumPy's eight-accumulator summation order. Threshold
 clamping, orientation/bilateral comparisons and point reductions retain
 their original operations. Row tiles are independent, so results do not
 depend on the number of threads.
@@ -45,20 +46,20 @@ def _tile_rows(m, points_per_fiber, dtype_bytes, threads):
     return max(1, int(budget // max(1, bytes_per_row)))
 
 
-def _pointwise_distances(q, f, euclidean=False):
+def _pointwise_distances(q, f, euclidean=False, point_major=False):
     """(b, P, 3) queries vs (m, P, 3) fixed -> (b, m, P) point
-    distances (squared by default), with the exact operation order of
+    distances (squared by default), optionally (P, b, m), with the operation order of
     similarity._fiber_distance_internal_use."""
 
     if (q.dtype == f.dtype == numpy.float64 and len(q) * len(f) >= 4096):
         # Compiled 3D distances fuse component differences/squares/additions.
-        # Restore a contiguous point axis for the original NumPy reduction.
+        # A contiguous point axis is available for callers that require it.
         from scipy.spatial.distance import cdist
         points = numpy.empty((q.shape[1], len(q), len(f)), dtype=numpy.float64)
         for point in range(q.shape[1]):
             cdist(q[:, point], f[:, point],
                   metric='euclidean' if euclidean else 'sqeuclidean', out=points[point])
-        return points.transpose(1, 2, 0).copy()
+        return points if point_major else points.transpose(1, 2, 0).copy()
 
     qx = q[:, :, 0][:, None, :]
     qy = q[:, :, 1][:, None, :]
@@ -79,12 +80,39 @@ def _pointwise_distances(q, f, euclidean=False):
     dx = numpy.ascontiguousarray(dx)
     if euclidean:
         numpy.sqrt(dx, out=dx)
-    return dx
+    return dx.transpose(2, 0, 1) if point_major else dx
+
+
+def _sum_point_major(points):
+    """Sum owned float64 scratch in NumPy's eight-accumulator point order."""
+    count = len(points)
+    if count < 8:
+        return points.sum(0)
+    if count > 128:
+        middle = (count // 2) // 8 * 8
+        return _sum_point_major(points[:middle]) + _sum_point_major(points[middle:])
+    end = count - count % 8
+    groups = points[:8]
+    for offset in range(8, end, 8):
+        groups += points[offset:offset + 8]
+    total = ((groups[0] + groups[1]) + (groups[2] + groups[3])) + \
+            ((groups[4] + groups[5]) + (groups[6] + groups[7]))
+    for offset in range(end, count):
+        total += points[offset]
+    return total
 
 
 def _reduce_points(d2, distance_method, threshold, sigmasq, points_per_fiber,
-                   euclidean=False):
+                   euclidean=False, axis=-1):
     """(b, m, P) -> (b, m), mirroring similarity.py:115-147."""
+
+    if distance_method == 'Hausdorff':
+        # Clipping is monotone, so the same maximum can be clipped afterward.
+        d = d2.max(axis)
+        if threshold:
+            d -= threshold * threshold
+            numpy.clip(d, 0.0, None, out=d)
+        return d
 
     if threshold:
         d2 -= threshold * threshold
@@ -93,17 +121,20 @@ def _reduce_points(d2, distance_method, threshold, sigmasq, points_per_fiber,
     if distance_method == 'Mean':
         if not euclidean:
             numpy.sqrt(d2, out=d2)
-        d = d2.sum(-1)
+        d = _sum_point_major(d2) if axis == 0 else d2.sum(-1)
         d /= float(points_per_fiber)
         numpy.square(d, out=d)
-    elif distance_method == 'Hausdorff':
-        d = d2.max(-1)
     elif distance_method == 'MeanSquared':
-        d = d2.sum(-1)
+        d = _sum_point_major(d2) if axis == 0 else d2.sum(-1)
         d = d / float(points_per_fiber)
     elif distance_method == 'StrictSimilarity':
-        d = numpy.exp(-d2 / sigmasq)
-        d = d.prod(-1)
+        if axis == 0:
+            numpy.negative(d2, out=d2)
+            d2 /= sigmasq
+            numpy.exp(d2, out=d2)
+            d = d2.prod(0)
+        else:
+            d = numpy.exp(-d2 / sigmasq).prod(-1)
     else:
         raise ValueError(f"Unsupported distance method: {distance_method}")
     return d
@@ -115,11 +146,14 @@ def _fiber_block_distances(q, f, threshold, distance_method, sigmasq):
     points_per_fiber = q.shape[1]
     # At zero threshold SciPy can fuse sqrt into its compiled 3D distances.
     euclidean = distance_method == 'Mean' and not threshold
-    fwd = _reduce_points(_pointwise_distances(q, f, euclidean),
-                         distance_method, threshold, sigmasq, points_per_fiber, euclidean)
+    # Reduce compiled point planes directly, preserving each metric's order.
+    point_major = q.dtype == f.dtype == numpy.float64 and len(q) * len(f) >= 4096
+    axis = 0 if point_major else -1
+    fwd = _reduce_points(_pointwise_distances(q, f, euclidean, point_major),
+                         distance_method, threshold, sigmasq, points_per_fiber, euclidean, axis)
     q_rev = q[:, ::-1]
-    rev = _reduce_points(_pointwise_distances(q_rev, f, euclidean),
-                         distance_method, threshold, sigmasq, points_per_fiber, euclidean)
+    rev = _reduce_points(_pointwise_distances(q_rev, f, euclidean, point_major),
+                         distance_method, threshold, sigmasq, points_per_fiber, euclidean, axis)
 
     if distance_method == 'StrictSimilarity':
         return numpy.maximum(fwd, rev)

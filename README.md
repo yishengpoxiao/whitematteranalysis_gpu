@@ -109,6 +109,11 @@ outlier references also reuse geometry-only XML readers. See the
 [StrictSimilarity, laterality and reference I/O measurements](doc/gpu/progress-2026-10-15-strict-geometry.md)
 for scope, exact-value checks, memory use and full-stage timing limits.
 
+Compiled CPU distance tiles now reduce point planes directly, avoiding the
+large transpose/copy while retaining NumPy's point summation order. See the
+[CPU point-plane measurements](doc/gpu/progress-2026-10-15-cpu-point-planes.md)
+for distance, registration and real atlas-labeling comparisons.
+
 ## 3D Slicer extension
 
 Use the [universal installer](slicer/WMAGPU/dist/WMAGPU-Installer.zip).
