@@ -31,6 +31,9 @@ class OutlierParallelTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.directory = self.temp.name
+        cache = patch.dict('os.environ', WMA_ATLAS_CACHE=str(Path(self.directory) / 'cache'))
+        cache.start()
+        self.addCleanup(cache.stop)
         for c in range(3):
             wma.io.write_polydata(fibers(np.arange(7) + c * 20.),
                                  str(Path(self.directory) / ('cluster_%05d.vtp' % (c + 1))))

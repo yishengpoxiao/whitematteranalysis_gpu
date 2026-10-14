@@ -48,6 +48,7 @@ Linux / Python 3.8 and Slicer 5.2.2 / Python 3.9 were tested; Windows has not be
 | `WMA_GPU=off`, `WMA_CPU_FAST=0` | Use the original per-fiber CPU implementation |
 | `WMA_GPU_DEVICES=0,1` | Select visible CUDA device indices for supported multi-GPU operations |
 | `WMA_GPU_FLOAT32=1` | Opt into float32; default is float64 |
+| `WMA_ATLAS_CACHE=/path/to/cache` | Override the automatic outlier atlas cache; `off` disables it |
 
 These environment variables apply to the Python/CLI backend. Slicer pages provide
 their own Backend selection. Some CLI tools also expose `-gpu auto|on|off`,
@@ -89,6 +90,12 @@ anatomical export. Set `WMA_VTP_COMPRESSION=zlib` for compact intermediates, or
 The [complete optimized CPU/GPU benchmark](doc/gpu/benchmark-org-2026-10-15-final.md)
 records the latest full-case times, resource use, output catalogue and numerical
 comparisons against the original complete GPU run.
+
+CPU and GPU outlier removal reuse cached atlas coordinates and reference
+probabilities across subjects and process restarts. Cache keys include atlas
+file identity, numerical parameters, backend, precision, library versions and
+implementation; changed references are recomputed automatically. See the
+[atlas cache measurements and controls](doc/gpu/progress-2026-10-15-atlas-cache.md).
 
 ## 3D Slicer extension
 

@@ -166,15 +166,13 @@ def main():
     
     cluster_outlier_std_threshold = args.clusterOutlierStandardDeviation
     print("Standard deviation for fiber outlier removal after clustering (accurate local probability): ", cluster_outlier_std_threshold)
-    
+    backend = 'gpu' if wma.gpu.use_gpu() else ('cpu' if wma.gpu.config.cpu_fast_enabled() else None)
 
     def outlier_removal_one_cluster(ca, cs, outdir, c):
 
-        pd_atlas = wma.io.read_polydata(ca)
         pd_subject = wma.io.read_polydata(cs)
         pd_out_fname = os.path.join(outdir, os.path.basename(cs))
         
-        number_fibers_in_atlas_cluster = pd_atlas.GetNumberOfLines()
         number_fibers_in_subject_cluster = pd_subject.GetNumberOfLines()
 
         # if either cluster is empty, we have to skip outlier removal
@@ -184,6 +182,16 @@ def main():
             log_str = str(c) + '\t' + str(number_fibers_in_subject_cluster)+'\t 0 \t 0 \t 0 \t 0 \t 0 \t 0 \t 0'
             
             return log_str
+
+        if backend:
+            from whitematteranalysis.gpu.atlas_cache import load_reference
+            atlas_array, total_similarity_atlas = load_reference(
+                ca, cluster_local_sigma * cluster_local_sigma,
+                distance_method, bilateral, backend)
+            number_fibers_in_atlas_cluster = len(atlas_array)
+        else:
+            pd_atlas = wma.io.read_polydata(ca)
+            number_fibers_in_atlas_cluster = pd_atlas.GetNumberOfLines()
 
         if number_fibers_in_atlas_cluster == 0:
             # this should not ever happen. Note that "outlier removed" atlas is temporary and should not be used for classification.
@@ -206,28 +214,36 @@ def main():
         ## cluster_right_hem.append(farray.number_right_hem)
         ## cluster_commissure.append(farray.number_commissure)
 
-        # Compute distances and fiber probabilities FOR ATLAS to form a basis for comparison
-        # Note that ideally this could be done once and stored, rather than computed for each subject
-        if distance_method == 'StrictSimilarity':
-            cluster_distances = wma.cluster._pairwise_distance_matrix(pd_atlas, 0.0, number_of_jobs=1, bilateral=bilateral, distance_method=distance_method, sigmasq = cluster_local_sigma * cluster_local_sigma)
-            cluster_similarity_atlas = cluster_distances
+        # Reuse atlas coordinates and probabilities; subject comparisons remain fresh.
+        if backend:
+            subject_array = wma.gpu.fiber_tensors.polydata_to_numpy(pd_subject, 15)
+            if backend == 'gpu':
+                matrix = wma.gpu.distance.distance_matrix_from_arrays
+                parallel = {}
+            else:
+                matrix = wma.gpu.cpu_backend._distance_matrix
+                parallel = dict(number_of_jobs=1)
+            cluster_distances = matrix(subject_array, atlas_array, 0.,
+                distance_method=distance_method, bilateral=bilateral, **parallel).T
+            cluster_similarity_subject = wma.similarity.distance_to_similarity(
+                cluster_distances, cluster_local_sigma * cluster_local_sigma)
         else:
-            cluster_distances = wma.cluster._pairwise_distance_matrix(pd_atlas, 0.0, number_of_jobs=1, bilateral=bilateral, distance_method=distance_method)
-            cluster_similarity_atlas = wma.similarity.distance_to_similarity(cluster_distances, cluster_local_sigma * cluster_local_sigma)
-                
-        # Compute distances from SUBJECT fibers to atlas fibers, and fiber probabilities
-        if distance_method == 'StrictSimilarity':
-            cluster_similarity_subject = wma.cluster._rectangular_distance_matrix(pd_subject, pd_atlas, 0.0, number_of_jobs=1, bilateral=bilateral, distance_method=distance_method, sigmasq = cluster_local_sigma * cluster_local_sigma)
-        else:
-            cluster_distances = wma.cluster._rectangular_distance_matrix(pd_subject, pd_atlas, 0.0, number_of_jobs=1, bilateral=bilateral, distance_method=distance_method)
-            cluster_similarity_subject = wma.similarity.distance_to_similarity(cluster_distances, cluster_local_sigma * cluster_local_sigma)
+            cluster_distances = wma.cluster._pairwise_distance_matrix(pd_atlas, 0.0,
+                number_of_jobs=1, bilateral=bilateral, distance_method=distance_method)
+            cluster_similarity_atlas = wma.similarity.distance_to_similarity(
+                cluster_distances, cluster_local_sigma * cluster_local_sigma)
+            cluster_distances = wma.cluster._rectangular_distance_matrix(pd_subject, pd_atlas, 0.0,
+                number_of_jobs=1, bilateral=bilateral, distance_method=distance_method)
+            cluster_similarity_subject = wma.similarity.distance_to_similarity(
+                cluster_distances, cluster_local_sigma * cluster_local_sigma)
 
         #print "SHAPE cluster similarity:",  cluster_similarity_atlas.shape, cluster_similarity_subject.shape
         
         #p(f1) = sum over all f2 of p(f1|f2) * p(f2)
         # by using sample we estimate expected value of the above
         #  get total similarity (probability) based on the atlas, and normalize by the number of fibers used in the comparison for easier comparison across clusters
-        total_similarity_atlas = (numpy.sum(cluster_similarity_atlas, axis=1) - 1.0) / number_fibers_in_atlas_cluster
+        if not backend:
+            total_similarity_atlas = (numpy.sum(cluster_similarity_atlas, axis=1) - 1.0) / number_fibers_in_atlas_cluster
         total_similarity_subject = numpy.sum(cluster_similarity_subject, axis=0)/ number_fibers_in_atlas_cluster
 
         #print "SHAPE total similarity:", total_similarity_atlas.shape, total_similarity_subject.shape

@@ -176,6 +176,18 @@ thread. More workers can increase memory use or reduce throughput; benchmark on
 your atlas and hardware. This currently uses one GPU. Auto honors
 `WMA_CPU_THREADS` as the CPU budget when it is set.
 
+CPU/GPU outlier removal automatically caches resampled atlas coordinates and
+reference probabilities for subsequent subjects and Slicer sessions. It stores
+no subject fibers, MRML nodes or CUDA tensors. Atlas changes, numerical parameters,
+backend/precision and implementation/library changes invalidate affected entries.
+The default location is `~/.cache/whitematteranalysis/atlas-outliers`, or
+`%LOCALAPPDATA%/whitematteranalysis/atlas-outliers` on Windows; `XDG_CACHE_HOME`
+is honored on Linux/macOS. Set `WMA_ATLAS_CACHE` before starting Slicer to override
+the directory, or set it to `off` to disable caching. The ORG 800-cluster cache
+uses approximately 279 MiB per numerical/backend variant. It can be deleted
+while WMA is idle; unavailable cache storage falls back to ordinary computation.
+The first use computes the reference statistics and writes the cache.
+
 The log distinguishes atlas-defined categories (800 for ORG), available reference
 cluster files, and nonempty clusters actually present in this subject. Progress
 counts only nonempty subject clusters, so its denominator can be below 800.
