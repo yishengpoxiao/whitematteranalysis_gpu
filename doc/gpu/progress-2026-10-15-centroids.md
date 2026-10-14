@@ -59,6 +59,14 @@ the zero-allocation expectation in an otherwise idle process while also testing
 cleanup after prior atlas labeling. No device reset or private workspace-clearing
 API is introduced.
 
+The rebuilt universal installer bundles source revision `e833c0e`. An isolated
+Linux Slicer 5.2.2 installation verifies the five pages, CPU/CUDA labeling,
+registration, core output tests, GPU selection, loader behavior, locking, and
+allocator cleanup. All four centroid-specific tests also pass against installed
+code with PyTorch 2.4.1+cu121 and Triton enabled, including exact distances and
+allocation lifetime. All 28 bundled/installed WMA Python files match committed
+source bytes. Tests perform no optional PyTorch download.
+
 ```bash
 export PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.:tests
 export WMA_CPU_THREADS=4 CUDA_VISIBLE_DEVICES=1
