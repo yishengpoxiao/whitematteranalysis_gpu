@@ -41,7 +41,9 @@ def cpu_threads(requested=None):
 def _tile_rows(m, points_per_fiber, dtype_bytes, threads):
     """Keep distance temporaries small enough for CPU cache reuse."""
 
-    bytes_per_row = m * points_per_fiber * dtype_bytes * 6
+    # Compiled tiles reuse their point planes; the NumPy fallback needs at most
+    # three point buffers. Keep the same cache budget with fewer tiny tiles.
+    bytes_per_row = m * points_per_fiber * dtype_bytes * 3
     budget = (32 if threads == 1 else 16) * 1024 * 1024
     return max(1, int(budget // max(1, bytes_per_row)))
 

@@ -17,12 +17,20 @@ from test_output_pipeline import baseline_module
 def compare(functions, repeats):
     outputs = [function() for function in functions]
     samples = [[], []]
+    peaks = [0, 0]
+    device = wma.gpu.get_device()
     for repeat in range(repeats):
         for index in (range(2) if repeat % 2 == 0 else reversed(range(2))):
+            torch.cuda.synchronize(device)
+            torch.cuda.reset_peak_memory_stats(device)
+            allocated = torch.cuda.memory_allocated(device)
             start = time.perf_counter()
             outputs[index] = functions[index]()
+            torch.cuda.synchronize(device)
             samples[index].append(time.perf_counter() - start)
-    return outputs, [dict(seconds=values, median_seconds=statistics.median(values)) for values in samples]
+            peaks[index] = max(peaks[index], torch.cuda.max_memory_allocated(device) - allocated)
+    return outputs, [dict(seconds=values, median_seconds=statistics.median(values),
+                          peak_extra_tensor_bytes=peaks[index]) for index, values in enumerate(samples)]
 
 
 def main():
@@ -32,6 +40,7 @@ def main():
     parser.add_argument('--fibers', type=int, default=8192)
     parser.add_argument('--repeat', type=int, default=5)
     parser.add_argument('--baseline', default='cffed63')
+    parser.add_argument('--exact', action='store_true', help='Require exact embedding equality')
     parser.add_argument('--output', required=True)
     args = parser.parse_args()
     original = baseline_module('whitematteranalysis.gpu._embeddingbaseline',
@@ -47,7 +56,10 @@ def main():
         return module.atlas_label_embedding_blocks(blocks, atlas, args.fibers)
     outputs, timings = compare([lambda: embedding(original), lambda: embedding(current)], args.repeat)
     for a, b in zip(*outputs):
-        np.testing.assert_allclose(a, b, rtol=1e-12, atol=1e-12)
+        if args.exact:
+            np.testing.assert_array_equal(a, b)
+        else:
+            np.testing.assert_allclose(a, b, rtol=1e-12, atol=1e-12)
     np.testing.assert_array_equal(outputs[0][1], outputs[1][1])
     report = dict(baseline=args.baseline, fibers=args.fibers, embedding=timings)
     print('EMBEDDING', json.dumps(timings), flush=True)
@@ -62,7 +74,10 @@ def main():
                 return wma.cluster.spectral_atlas_label(data, atlas, use_gpu=True)
         outputs, timings = compare([lambda: classify(original), lambda: classify(current)], args.repeat)
         np.testing.assert_array_equal(outputs[0][1], outputs[1][1])
-        np.testing.assert_allclose(outputs[0][3], outputs[1][3], rtol=1e-12, atol=1e-12)
+        if args.exact:
+            np.testing.assert_array_equal(outputs[0][3], outputs[1][3])
+        else:
+            np.testing.assert_allclose(outputs[0][3], outputs[1][3], rtol=1e-12, atol=1e-12)
         for index in range(outputs[0][0].GetCellData().GetNumberOfArrays()):
             reference = outputs[0][0].GetCellData().GetArray(index)
             result = outputs[1][0].GetCellData().GetArray(reference.GetName())
@@ -70,6 +85,7 @@ def main():
         report['classification'] = timings
         print('CLASSIFICATION', json.dumps(timings), flush=True)
     report['labels_and_attributes_match'] = True
+    report['exact_embedding_checked'] = args.exact
     Path(args.output).write_text(json.dumps(report, indent=2) + '\n')
 
 

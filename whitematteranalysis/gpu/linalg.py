@@ -20,6 +20,7 @@ import os
 import numpy
 
 from .config import get_device, config
+from . import embedding_kernel
 
 try:
     import torch
@@ -133,7 +134,7 @@ def _atlas_embedding_block(B, atlas, prepared):
     Bg = B.to(device=dev, dtype=torch.float64) if torch.is_tensor(B) else _as_gpu(B, dev)
     row_sum_2 = Bg.sum(0) + rm @ Bg
     dhat_b = torch.sqrt(torch.reciprocal(torch.where(row_sum_2 < 0, .1, row_sum_2)))
-    Bg = Bg * (dhat_a[:, None] * dhat_b[None, :])
+    Bg = embedding_kernel.normalized_similarities(Bg, dhat_a, dhat_b)
     b_col_sums = Bg.sum(0)
     V = ((Bg.t() @ Eg) * recip[None, :]) / norm[None, :]
     embed = V[:, :-1].flip(1) / V[:, -1:]

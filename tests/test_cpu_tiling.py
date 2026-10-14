@@ -18,6 +18,25 @@ def fiber_array(values):
 
 
 class CPUTilingTests(unittest.TestCase):
+    def test_automatic_tiles_match_frozen_backend(self):
+        from test_output_pipeline import baseline_module
+        original = baseline_module('whitematteranalysis.gpu._tilesbaseline',
+                                   'gpu/cpu_backend.py', '8f83f6f')
+        rng = np.random.RandomState(82)
+        for n, m in ((17, 2500), (513, 257)):
+            for dtype in (np.float64, np.float32):
+                queries = rng.normal(size=(n, 15, 3)).astype(dtype)
+                fixed = rng.normal(size=(m, 15, 3)).astype(dtype)
+                queries[-1, 0, 0], fixed[-1, 0, 0] = np.nan, np.inf
+                for method in ('Mean', 'MeanSquared', 'Hausdorff', 'StrictSimilarity'):
+                    for bilateral in (False, True):
+                        for workers in (1, 4):
+                            expected = original._distance_matrix(queries, fixed, .1, method,
+                                bilateral, number_of_jobs=workers)
+                            actual = cpu._distance_matrix(queries, fixed, .1, method,
+                                bilateral, number_of_jobs=workers)
+                            np.testing.assert_array_equal(actual, expected)
+
     def test_point_major_sum_order(self):
         rng = np.random.RandomState(52)
         with np.errstate(all='ignore'):

@@ -119,6 +119,11 @@ memory by approximately 32–50%. See the
 [GPU scratch measurements](doc/gpu/progress-2026-10-15-gpu-scratch.md)
 for exact-value checks, timing results and the affected execution paths.
 
+GPU similarity kernels also fuse the Gaussian conversion, and large embedding
+blocks normalize without a full weight matrix. CPU tiles use the reduced scratch
+requirements. See the [similarity, normalization and tile measurements](doc/gpu/progress-2026-10-15-embedding-tiles.md)
+for exact comparisons, memory peaks and measured timing limits.
+
 ## 3D Slicer extension
 
 Use the [universal installer](slicer/WMAGPU/dist/WMAGPU-Installer.zip).

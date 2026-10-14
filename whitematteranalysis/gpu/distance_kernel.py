@@ -63,7 +63,8 @@ if triton is not None:
     def _distances(F, Q, Output, NF, COUNT,
                    P: tl.constexpr, WIDTH: tl.constexpr, STEPS: tl.constexpr,
                    THRESHOLD2: tl.constexpr, METHOD: tl.constexpr, BLOCK: tl.constexpr,
-                   BILATERAL: tl.constexpr = False, INV_SIGMA: tl.constexpr = 0.):
+                   BILATERAL: tl.constexpr = False, INV_SIGMA: tl.constexpr = 0.,
+                   GAUSSIAN: tl.constexpr = False, INV_GAUSSIAN: tl.constexpr = 0.):
         pair = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
         p = tl.arange(0, WIDTH)[None, :]
         fi, qi = pair[:, None] % NF, pair[:, None] // NF
@@ -94,6 +95,8 @@ if triton is not None:
                 result = tl.maximum(result, reflected, propagate_nan=tl.PropagateNan.ALL)
             else:
                 result = tl.minimum(result, reflected, propagate_nan=tl.PropagateNan.ALL)
+        if GAUSSIAN:
+            result = libdevice.exp(-result * tl.full((), INV_GAUSSIAN, tl.float64))
         tl.store(Output + pair, result, pair < COUNT)
 
     @triton.jit
@@ -133,7 +136,8 @@ def centroid_distances(queries, centroids):
     return output
 
 
-def fiber_distances(queries, fixed, threshold, method, bilateral=False, sigmasq=6400.):
+def fiber_distances(queries, fixed, threshold, method, bilateral=False, sigmasq=6400.,
+                    similarity_sigmasq=None):
     import torch
 
     shape = (queries.shape[0], fixed.shape[0])
@@ -149,5 +153,7 @@ def fiber_distances(queries, fixed, threshold, method, bilateral=False, sigmasq=
             P=points, WIDTH=1 << steps, STEPS=steps, THRESHOLD2=threshold * threshold,
             METHOD=method, BLOCK=block, BILATERAL=bilateral,
             INV_SIGMA=1. / sigmasq if method == 'StrictSimilarity' else 0.,
+            GAUSSIAN=similarity_sigmasq is not None,
+            INV_GAUSSIAN=1. / similarity_sigmasq if similarity_sigmasq is not None else 0.,
             num_warps=1, enable_fp_fusion=False)
     return output

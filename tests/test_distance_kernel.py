@@ -9,6 +9,24 @@ from whitematteranalysis.gpu import distance, distance_kernel
 
 @unittest.skipUnless(wma.gpu.available(), 'CUDA is required')
 class DistanceKernelTests(unittest.TestCase):
+    def test_gaussian_similarities_match_frozen_backend(self):
+        import torch
+        from test_output_pipeline import baseline_module
+        original = baseline_module('whitematteranalysis.gpu._gaussianbaseline',
+                                   'gpu/distance.py', '8f83f6f')
+        torch.manual_seed(83)
+        for points, dtype in product((10, 15, 50), (torch.float64, torch.float32)):
+            fixed = torch.randn((37, points, 3), dtype=dtype, device='cuda')
+            queries = fixed[:5].clone()
+            fixed[0, 0, 0], fixed[1, 0, 0] = float('nan'), float('inf')
+            before = queries.clone()
+            for method, bilateral in product(distance.SUPPORTED_DISTANCE_METHODS, (False, True)):
+                for sigma in (1e-5, 20., 1e6, 0., float('inf'), float('nan')):
+                    expected = original._similarity_tensor_block(queries, fixed, .1, sigma, method, bilateral, 6400.)
+                    actual = distance._similarity_tensor_block(queries, fixed, .1, sigma, method, bilateral, 6400.)
+                    torch.testing.assert_close(actual, expected, rtol=0., atol=0., equal_nan=True)
+            self.assertTrue(torch.equal(queries, before))
+
     def test_eager_scratch_matches_frozen_backend(self):
         import torch
         from test_output_pipeline import baseline_module
@@ -87,8 +105,11 @@ class DistanceKernelTests(unittest.TestCase):
         selected = (previous + 1) % torch.cuda.device_count()
         fixed = torch.ones((7, 10, 3), dtype=torch.float64, device=selected)
         moving = torch.zeros((3, 10, 3), dtype=torch.float64, device=selected)
-        actual = distance._fiber_block_distances(moving, fixed, .1, 'Mean', 6400., bilateral=True)
-        with patch.object(distance_kernel, 'triton', None):
-            expected = distance._fiber_block_distances(moving, fixed, .1, 'Mean', 6400., bilateral=True)
-        self.assertTrue(torch.equal(actual, expected))
+        for similarity_sigmasq in (None, 400.):
+            actual = distance._fiber_block_distances(moving, fixed, .1, 'Mean', 6400.,
+                bilateral=True, similarity_sigmasq=similarity_sigmasq)
+            with patch.object(distance_kernel, 'triton', None):
+                expected = distance._fiber_block_distances(moving, fixed, .1, 'Mean', 6400.,
+                    bilateral=True, similarity_sigmasq=similarity_sigmasq)
+            self.assertTrue(torch.equal(actual, expected))
         self.assertEqual(torch.cuda.current_device(), previous)
