@@ -114,6 +114,11 @@ large transpose/copy while retaining NumPy's point summation order. See the
 [CPU point-plane measurements](doc/gpu/progress-2026-10-15-cpu-point-planes.md)
 for distance, registration and real atlas-labeling comparisons.
 
+The eager PyTorch GPU path reuses point-distance scratch to reduce live tensor
+memory by approximately 32–50%. See the
+[GPU scratch measurements](doc/gpu/progress-2026-10-15-gpu-scratch.md)
+for exact-value checks, timing results and the affected execution paths.
+
 ## 3D Slicer extension
 
 Use the [universal installer](slicer/WMAGPU/dist/WMAGPU-Installer.zip).

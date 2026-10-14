@@ -61,40 +61,36 @@ def _pointwise_squared_distance(q, f):
     dx = dx.mul_(dx)
     dy = fy - qy
     dy = dy.mul_(dy)
-    dz = fz - qz
-    dz = dz.mul_(dz)
-
-    d2 = dx.add_(dy)
-    d2 = d2.add_(dz)
-    return d2
+    dx.add_(dy)
+    torch.sub(fz, qz, out=dy)
+    dy.square_()
+    return dx.add_(dy)
 
 
 def _reduce_points(d2, distance_method, threshold, sigmasq, points_per_fiber):
     """Reduce (b, m, P) squared pointwise distances to (b, m) fiber
     distances, exactly mirroring similarity.py:115-147."""
 
+    if distance_method == 'Hausdorff':
+        # Clipping is monotone; apply it to the reduced matrix.
+        d = d2.amax(-1)
+        if threshold:
+            d.sub_(threshold * threshold).clamp_min_(0.0)
+        return d
+
     if threshold:
         # threshold is applied to the squared pointwise distances,
         # before the reduction over points (similarity.py:115-119).
-        d2 = d2 - threshold * threshold
-        d2 = d2.clamp_min_(0.0)
+        d2.sub_(threshold * threshold).clamp_min_(0.0)
 
     if distance_method == 'Mean':
         # mean euclidean point distance, squared for consistency
-        d = torch.sqrt(d2)
-        d = d.sum(-1)
-        d = d / float(points_per_fiber)
-        d = d * d
-    elif distance_method == 'Hausdorff':
-        # max of SQUARED pointwise distances (as in the CPU code)
-        d = d2.amax(-1)
+        d = d2.sqrt_().sum(-1).div_(float(points_per_fiber)).square_()
     elif distance_method == 'MeanSquared':
-        d = d2.sum(-1)
-        d = d / float(points_per_fiber)
+        d = d2.sum(-1).div_(float(points_per_fiber))
     elif distance_method == 'StrictSimilarity':
         # product of per-point similarities (similarity.distance_to_similarity)
-        d = torch.exp(-d2 / sigmasq)
-        d = d.prod(-1)
+        d = d2.neg_().div_(sigmasq).exp_().prod(-1)
     else:
         raise ValueError(f"Unsupported distance method for GPU: {distance_method}")
 

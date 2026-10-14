@@ -9,6 +9,30 @@ from whitematteranalysis.gpu import distance, distance_kernel
 
 @unittest.skipUnless(wma.gpu.available(), 'CUDA is required')
 class DistanceKernelTests(unittest.TestCase):
+    def test_eager_scratch_matches_frozen_backend(self):
+        import torch
+        from test_output_pipeline import baseline_module
+        original = baseline_module('whitematteranalysis.gpu._scratchbaseline',
+                                   'gpu/distance.py', '97bc764')
+        rng = np.random.RandomState(78)
+        with patch.object(distance_kernel, 'triton', None):
+            for points, dtype, strided in product((10, 50), (torch.float32, torch.float64), (False, True)):
+                fixed = torch.tensor(rng.normal(size=(37, points, 3)), dtype=dtype, device='cuda')
+                moving = fixed[:5].clone()
+                fixed[0, 0, 0], fixed[1, 1, 1] = float('nan'), float('inf')
+                if strided:
+                    fixed, moving = fixed[:, ::2], moving[:, ::2]
+                before_fixed, before_moving = fixed.clone(), moving.clone()
+                for method, bilateral, threshold in product(distance.SUPPORTED_DISTANCE_METHODS,
+                                                            (False, True), (0., .1, float('inf'), float('nan'))):
+                    sigmas = (1e-5, 100., 1e6, 0., -1., float('inf'), float('nan')) if method == 'StrictSimilarity' else (6400.,)
+                    for sigma in sigmas:
+                        expected = original._fiber_block_distances(moving, fixed, threshold, method, sigma, bilateral)
+                        actual = distance._fiber_block_distances(moving, fixed, threshold, method, sigma, bilateral)
+                        torch.testing.assert_close(actual, expected, rtol=0., atol=0., equal_nan=True)
+                torch.testing.assert_close(fixed, before_fixed, rtol=0., atol=0., equal_nan=True)
+                torch.testing.assert_close(moving, before_moving, rtol=0., atol=0., equal_nan=True)
+
     def test_strict_probability_scales(self):
         import torch
         rng = np.random.RandomState(48)
