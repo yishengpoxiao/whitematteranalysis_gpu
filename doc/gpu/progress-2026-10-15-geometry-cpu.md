@@ -83,6 +83,13 @@ input arrays. The complete real-subject GPU labels and embedding match exactly.
 CUDA regression checks also cover short/long fibers, float32 fallback, strided
 inputs, NaN/Inf, partial blocks, allocation retries, and selected-device execution.
 
+The rebuilt universal installer bundles source revision `c0e81a7`. An isolated
+Linux Slicer 5.2.2 installation verifies all five pages, CPU/GPU labeling,
+registration, core output tests, GPU selection, allocator cleanup, loader behavior,
+and workflow locking. The compiled/NumPy distance parity test also passes with
+Slicer's SciPy 1.9.2. All 28 bundled and installed WMA Python files match the
+committed source bytes. No optional PyTorch download was performed during tests.
+
 ```bash
 export PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.:tests
 export WMA_CPU_THREADS=4 CUDA_VISIBLE_DEVICES=1
