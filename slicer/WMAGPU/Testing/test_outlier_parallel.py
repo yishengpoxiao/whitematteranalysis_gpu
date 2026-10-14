@@ -49,9 +49,16 @@ class OutlierParallelTests(unittest.TestCase):
         reference, rejected = self.run_outliers('original', 1)
         self.assertGreater(rejected, 0)
         for workers in (1, 4, 0):
-            mask, count = self.run_outliers('cpu', workers)
+            messages = []
+            mask, count = self.run_outliers('cpu', workers,
+                progress_callback=lambda text, pct: messages.append(text))
             np.testing.assert_array_equal(mask, reference)
             self.assertEqual(count, rejected)
+            self.assertIn('atlas defines 6 clusters; subject has 5 nonempty, 1 empty', messages[0])
+            self.assertEqual(messages[1], 'Atlas reference cluster files: 4/6')
+            self.assertTrue(any('cluster 4: missing atlas reference' in text for text in messages))
+            self.assertTrue(any('cluster 5: empty atlas reference' in text for text in messages))
+            self.assertIn('5/5 nonempty subject clusters done (atlas total 6)', messages[-1])
         # Missing and empty reference clusters retain their subject fibers.
         np.testing.assert_array_equal(reference[np.isin(self.labels, [3, 4])], 1)
 

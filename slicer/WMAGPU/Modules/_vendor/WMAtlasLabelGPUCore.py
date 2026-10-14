@@ -540,8 +540,13 @@ def remove_cluster_outliers(subject_polydata, cluster_idx, cluster_count,
         workers = min(workers, max(1, free_bytes // (512 << 20)))
         gpu_budget = max(1, int(free_bytes * 0.5) // workers)
     if progress_callback:
-        progress_callback("Outlier removal: %d clusters, %d parallel workers (%s)" % (
-            len(groups), workers, 'GPU streams' if use_gpu else 'CPU'), 60)
+        progress_callback("Outlier removal: atlas defines %d clusters; subject has %d nonempty, %d empty; "
+                          "%d parallel workers (%s)" % (
+            cluster_count, len(groups), cluster_count - len(groups), workers,
+            'GPU streams' if use_gpu else 'CPU'), 60)
+        reference_names = {entry.name for entry in os.scandir(atlas_cluster_directory) if entry.is_file()}
+        reference_count = sum('cluster_%05d.vtp' % (c + 1) in reference_names for c in range(cluster_count))
+        progress_callback("Atlas reference cluster files: %d/%d" % (reference_count, cluster_count), 60)
 
     # Resample the subject once. Workers receive disjoint NumPy slices rather
     # than repeatedly masking and reading the shared Slicer VTK input.
@@ -555,11 +560,11 @@ def remove_cluster_outliers(subject_polydata, cluster_idx, cluster_count,
         indices = groups[c]
         filename = os.path.join(atlas_cluster_directory, 'cluster_%05d.vtp' % (c + 1))
         if not os.path.isfile(filename):
-            return c, indices, 0
+            return c, indices, 0, 'missing'
         atlas_pd = wma.io.read_polydata(filename)
         n_atlas = atlas_pd.GetNumberOfLines()
         if not n_atlas:
-            return c, indices, 0
+            return c, indices, 0, 'empty'
         kwargs = dict(bilateral=bilateral, distance_method=distance_method)
         if use_gpu or cpu_fast:
             atlas_array = fiber_tensors.polydata_to_numpy(atlas_pd, 15)
@@ -596,20 +601,25 @@ def remove_cluster_outliers(subject_polydata, cluster_idx, cluster_count,
         total_subject = numpy.sum(similarity_subject, axis=0) / n_atlas
         cutoff = numpy.mean(total_atlas) - std_threshold * numpy.std(total_atlas)
         keep = total_subject >= cutoff
-        return c, indices[keep], int((~keep).sum())
+        return c, indices[keep], int((~keep).sum()), None
 
     rejected_total = 0
     completed = 0
 
     def collect(result):
         nonlocal rejected_total, completed
-        c, kept_indices, rejected = result
+        c, kept_indices, rejected, skipped = result
         fiber_mask[kept_indices] = 1
         rejected_total += rejected
         completed += 1
         if progress_callback:
-            progress_callback("Outlier removal: %d/%d clusters done; cluster %d rejected %d/%d fibers" % (
-                completed, len(groups), c + 1, rejected, len(groups[c])),
+            if skipped:
+                progress_callback("WARNING: cluster %d: %s atlas reference; outlier check skipped, "
+                                  "%d subject fibers retained." % (c + 1, skipped, len(kept_indices)),
+                                  60 + 35 * completed // len(groups))
+            progress_callback("Outlier removal: %d/%d nonempty subject clusters done (atlas total %d); "
+                              "cluster %d rejected %d/%d fibers" % (
+                completed, len(groups), cluster_count, c + 1, rejected, len(groups[c])),
                 60 + 35 * completed // len(groups))
 
     if workers == 1:

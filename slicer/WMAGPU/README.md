@@ -174,6 +174,13 @@ thread. More workers can increase memory use or reduce throughput; benchmark on
 your atlas and hardware. This currently uses one GPU. Auto honors
 `WMA_CPU_THREADS` as the CPU budget when it is set.
 
+The log distinguishes atlas-defined categories (800 for ORG), available reference
+cluster files, and nonempty clusters actually present in this subject. Progress
+counts only nonempty subject clusters, so its denominator can be below 800.
+Empty categories require no outlier calculation; saving cluster files still
+writes every atlas category. Missing or empty reference files produce a warning
+and retain that cluster's fibers without an outlier check.
+
 A bounded ORG benchmark (32 real reference clusters, 256 derived subject fibers,
 float64, one timing per setting after warm-up) produced identical masks and 39
 rejections at every worker count:

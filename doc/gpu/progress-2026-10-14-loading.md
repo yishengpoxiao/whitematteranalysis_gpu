@@ -35,6 +35,12 @@
   slices using bounded tiles, including with one worker. Permit one-row tiles
   when eight rows would exceed the temporary-memory target. Scalar arithmetic
   and result order are unchanged.
+- Clarify outlier progress: report atlas-defined category count, available
+  reference-file count, nonempty subject count, and empty subject count separately.
+  Count completed nonempty clusters in progress, and warn when a missing/empty
+  reference prevents an outlier check. Preserve the previous behavior of keeping
+  those fibers. Tests distinguish six defined categories, five occupied subject
+  clusters, four reference files, and missing versus empty references.
 
 ## Bounded measurements
 
@@ -61,7 +67,7 @@ Fresh initialization of all five Slicer pages takes 0.024 s in the startup check
 no new torch, scipy, or matplotlib imports occur. This excludes Slicer launch,
 data reading, and rendering.
 
-A real 3.4 GB legacy VTK input contains 328,228 fibers and 31,717,748 points.
+A real 3,555,014,103-byte legacy VTK input contains 328,228 fibers and 31,717,748 points.
 The hidden Model loader retains all of them. A single Slicer read took 31.00 s;
 this is a current-path measurement, not a before/after file-reading speedup.
 Identity input preparation decreased from 2.738 s to 0.000302 s by sharing geometry.
