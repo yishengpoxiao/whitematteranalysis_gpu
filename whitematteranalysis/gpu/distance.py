@@ -38,14 +38,8 @@ from . import fiber_tensors, distance_kernel
 
 # Methods with a GPU implementation. Landmarks/Frechet/Mean_shape stay
 # on the CPU path (see gpu.distance_supported).
-SUPPORTED_DISTANCE_METHODS = ('Mean', 'MeanSquared', 'Hausdorff', 'StrictSimilarity')
-
-
-def distance_supported(distance_method, landmarks=None, landmarks_n=None, landmarks_m=None):
-    """True if the requested computation has a GPU implementation."""
-
-    return (distance_method in SUPPORTED_DISTANCE_METHODS) and \
-        landmarks is None and landmarks_n is None and landmarks_m is None
+SUPPORTED_DISTANCE_METHODS = fiber_tensors.SUPPORTED_DISTANCE_METHODS
+distance_supported = fiber_tensors.distance_supported
 
 
 def _pointwise_squared_distance(q, f):

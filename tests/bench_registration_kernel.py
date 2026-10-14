@@ -23,7 +23,10 @@ def main():
     parser.add_argument('--moving', type=int, default=1000)
     parser.add_argument('--repeat', type=int, default=20)
     parser.add_argument('--maxfun', type=int, default=30)
+    parser.add_argument('--no-triton', action='store_true', help='Measure the PyTorch CUDA fallback')
     args = parser.parse_args()
+    if args.no_triton:
+        current.registration_kernel.triton = None
     source = subprocess.check_output([
         'git', 'show', args.baseline + ':whitematteranalysis/gpu/registration.py'], text=True)
     baseline = types.ModuleType('whitematteranalysis.gpu._benchmark_baseline')

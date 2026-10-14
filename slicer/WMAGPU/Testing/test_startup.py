@@ -25,6 +25,13 @@ assert not {'scipy', 'matplotlib', 'torch'} & (set(sys.modules) - before)
 from whitematteranalysis import io, filter, fibers
 assert io is wma.io and filter is wma.filter and fibers is wma.fibers
 assert not {'scipy', 'matplotlib', 'torch'} & (set(sys.modules) - before)
+import numpy as np
+registration = wma.register_two_subjects.RegisterTractography()
+registration.fixed = np.zeros((3, 4, 3))
+registration.moving = np.ones((3, 4, 3))
+registration.use_gpu, registration.maxfun = False, 2
+registration.compute()
+assert 'torch' not in sys.modules
 for module in (wma, wma.gpu):
     try:
         module.unknown_wma_attribute

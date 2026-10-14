@@ -152,24 +152,27 @@ def _inner_loop_objective(F, M, sigmasq, dev, chunk_rows=None):
 def _squared_point_distances(F, q):
     """Eager reference for environments without Triton."""
     dx = F[None, :, :, 0] - q[:, None, :, 0]
+    dx.square_()
     dy = F[None, :, :, 1] - q[:, None, :, 1]
-    dz = F[None, :, :, 2] - q[:, None, :, 2]
-    dx = dx.mul_(dx)
-    dy = dy.mul_(dy)
-    dz = dz.mul_(dz)
-    return dx.add_(dy).add_(dz)
+    dy.square_()
+    dx.add_(dy)
+    torch.sub(F[None, :, :, 2], q[:, None, :, 2], out=dy)
+    dy.square_()
+    return dx.add_(dy)
 
 
 def _pairwise_probability(F, q, sigmasq):
     """Fuse point arithmetic, preserving PyTorch's point/fiber reductions."""
     if registration_kernel.triton is not None and F.is_cuda:
+        if F.shape[1] <= 32:
+            return registration_kernel.pairwise_probabilities(F, q, sigmasq).sum(-1)
         dist_forward, dist_reverse = registration_kernel.mean_squared_distances(F, q)
     else:
         points = float(F.shape[1])
         dist_forward = _squared_point_distances(F, q).sum(-1) / points
         dist_reverse = _squared_point_distances(F, q.flip(1)).sum(-1) / points
-    dist = torch.minimum(dist_forward, dist_reverse)
-    return torch.exp(-dist / sigmasq).sum(-1)
+    torch.minimum(dist_forward, dist_reverse, out=dist_forward)
+    return dist_forward.neg_().div_(sigmasq).exp_().sum(-1)
 
 
 def objective_value(fixed, moving, transform, mode, sigma, device=None):

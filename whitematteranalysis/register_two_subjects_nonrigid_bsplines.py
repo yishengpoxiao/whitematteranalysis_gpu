@@ -119,6 +119,7 @@ class RegisterTractographyNonrigid(wma.register_two_subjects.RegisterTractograph
         # GPU inputs and B-spline sampling geometry live for one compute call.
         self.use_gpu = None
         self._gpu_objective = None
+        self._cpu_executor = None
 
     def initialize_nonrigid_grid(self):
         res = self.nonrigid_grid_resolution
@@ -143,7 +144,11 @@ class RegisterTractographyNonrigid(wma.register_two_subjects.RegisterTractograph
             obj = objective(scaled_current_x, self.sigma)
         else:
             moving = self.transform_fiber_array_numpy(self.moving, scaled_current_x)
-            obj = wma.register_two_subjects.inner_loop_objective(self.fixed, moving, self.sigma * self.sigma)
+            if self._using_cpu_fast():
+                obj = wma.gpu.cpu_backend.inner_loop_objective(
+                    self.fixed, moving, self.sigma * self.sigma, executor=self._cpu_executor)
+            else:
+                obj = wma.register_two_subjects.inner_loop_objective(self.fixed, moving, self.sigma * self.sigma)
 
         # keep track of minimum objective so far and its matching transform
         if obj < self.minimum_objective:
@@ -241,6 +246,10 @@ class RegisterTractographyNonrigid(wma.register_two_subjects.RegisterTractograph
             from .gpu.bspline import NonrigidObjective
             self._gpu_objective = NonrigidObjective(
                 self.fixed, self.moving, self.nonrigid_grid_resolution)
+        elif self._using_cpu_fast() and wma.gpu.cpu_backend.cpu_threads() > 1:
+            from concurrent.futures import ThreadPoolExecutor
+            self._cpu_executor = ThreadPoolExecutor(
+                max_workers=wma.gpu.cpu_backend.cpu_threads())
         try:
             if self.optimizer == "Cobyla":
 
@@ -309,6 +318,9 @@ class RegisterTractographyNonrigid(wma.register_two_subjects.RegisterTractograph
                 print("Unknown optimizer.")
         finally:
             self._gpu_objective = None
+            if self._cpu_executor is not None:
+                self._cpu_executor.shutdown(wait=True)
+                self._cpu_executor = None
 
         progress_file = open(self.progress_filename, 'a')
         self.total_time = time.time() - self.start_time

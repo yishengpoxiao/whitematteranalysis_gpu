@@ -1,8 +1,9 @@
-"""Optional fused point distances; PyTorch retains all reduction operations."""
+"""Optional fused registration distances/probabilities; PyTorch reduces fibers."""
 
 try:
     import triton
     import triton.language as tl
+    from triton.language.extra.cuda import libdevice
 except ImportError:
     triton = None
 
@@ -66,7 +67,8 @@ if triton is not None:
     @triton.jit
     def _mean_squared(F, M, Forward, Reverse, NF, COUNT,
                       P: tl.constexpr, WIDTH: tl.constexpr, STEPS: tl.constexpr,
-                      BLOCK: tl.constexpr):
+                      BLOCK: tl.constexpr, PROBABILITY: tl.constexpr,
+                      INV_SIGMA: tl.constexpr):
         pair = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
         lane = tl.arange(0, WIDTH)
         fi = pair[:, None] % NF
@@ -86,8 +88,15 @@ if triton is not None:
             forward = af + bf
             reverse = ar + br
         inv = tl.full((), 1.0 / P, tl.float64)
-        tl.store(Forward + pair, tl.reshape(forward, (BLOCK,)) * inv, pair < COUNT)
-        tl.store(Reverse + pair, tl.reshape(reverse, (BLOCK,)) * inv, pair < COUNT)
+        forward = tl.reshape(forward, (BLOCK,)) * inv
+        reverse = tl.reshape(reverse, (BLOCK,)) * inv
+        if PROBABILITY:
+            distance = tl.minimum(forward, reverse, propagate_nan=tl.PropagateNan.ALL)
+            values = libdevice.exp(-distance * tl.full((), INV_SIGMA, tl.float64))
+            tl.store(Forward + pair, values, pair < COUNT)
+        else:
+            tl.store(Forward + pair, forward, pair < COUNT)
+            tl.store(Reverse + pair, reverse, pair < COUNT)
 
 
 def mean_squared_distances(fixed, moving):
@@ -106,5 +115,24 @@ def mean_squared_distances(fixed, moving):
     with torch.cuda.device(fixed.device):
         _mean_squared[(triton.cdiv(count, 32),)](
             fixed, moving, forward, reverse, shape[1], count,
-            P=points, WIDTH=1 << steps, STEPS=steps, BLOCK=32, enable_fp_fusion=False)
+            P=points, WIDTH=1 << steps, STEPS=steps, BLOCK=32,
+            PROBABILITY=False, INV_SIGMA=1., enable_fp_fusion=False)
     return forward, reverse
+
+
+def pairwise_probabilities(fixed, moving, sigmasq):
+    """For P<=32, fuse distance, minimum and exp; PyTorch sums over fibers."""
+    import torch
+
+    points = fixed.shape[1]
+    output = torch.empty((moving.shape[0], fixed.shape[0]),
+                         dtype=torch.float64, device=fixed.device)
+    steps = points.bit_length() - 1
+    with torch.cuda.device(fixed.device):
+        # One warp keeps exp lanes occupied after the point reduction.
+        _mean_squared[(triton.cdiv(output.numel(), 32),)](
+            fixed, moving, output, output, fixed.shape[0], output.numel(),
+            P=points, WIDTH=1 << steps, STEPS=steps, BLOCK=32,
+            PROBABILITY=True, INV_SIGMA=1. / sigmasq,
+            num_warps=1, enable_fp_fusion=False)
+    return output

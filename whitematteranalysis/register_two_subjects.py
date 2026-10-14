@@ -137,12 +137,11 @@ class RegisterTractography:
         # override for this registration only.
         self.use_gpu = None
         self._gpu_objective = None
+        self._cpu_executor = None
 
     def _using_gpu(self):
         """Resolve whether the objective should run on the GPU."""
         import whitematteranalysis.gpu as _gpu
-        if not _gpu.available():
-            return False
         return _gpu.use_gpu(self.use_gpu)
 
     def _using_cpu_fast(self):
@@ -154,8 +153,7 @@ class RegisterTractography:
             return False
         if self.use_gpu is True:
             return False
-        import os
-        return os.environ.get('WMA_CPU_FAST', '1') in ('1', 'true', 'yes', 'on')
+        return _gpu.config.cpu_fast_enabled()
 
     def objective_function(self, current_x):
         """ The actual objective used in registration.  Function of
@@ -175,11 +173,9 @@ class RegisterTractography:
                 self.fixed, self.moving, current_x, self.mode, self.sigma)
         elif self._using_cpu_fast():
             import whitematteranalysis.gpu as _gpu
-            # the batched 4x4 transform is much faster than the per-point
-            # vtk loop and bit-identical; the entropy objective below is
-            # already numpy-vectorized per fiber and is fastest as-is
             moving = _gpu.cpu_backend.transform_fiber_array(self.moving, current_x, self.mode)
-            obj = inner_loop_objective(self.fixed, moving, self.sigma * self.sigma)
+            obj = _gpu.cpu_backend.inner_loop_objective(
+                self.fixed, moving, self.sigma * self.sigma, executor=self._cpu_executor)
         else:
             ## t1 = time.time()
             moving = transform_fiber_array_numpy(self.moving, current_x, self.mode)
@@ -265,6 +261,10 @@ class RegisterTractography:
         if self._using_gpu():
             self._gpu_objective = wma.gpu.registration.AffineObjective(
                 self.fixed, self.moving)
+        elif self._using_cpu_fast() and wma.gpu.cpu_backend.cpu_threads() > 1:
+            from concurrent.futures import ThreadPoolExecutor
+            self._cpu_executor = ThreadPoolExecutor(
+                max_workers=wma.gpu.cpu_backend.cpu_threads())
         try:
             if self.optimizer == "Cobyla":
 
@@ -315,6 +315,9 @@ class RegisterTractography:
                 print("Unknown optimizer.")
         finally:
             self._gpu_objective = None
+            if self._cpu_executor is not None:
+                self._cpu_executor.shutdown(wait=True)
+                self._cpu_executor = None
 
         self.final_transform = numpy.divide(self.final_transform, self.transform_scaling)
 

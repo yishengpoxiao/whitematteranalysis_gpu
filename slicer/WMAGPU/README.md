@@ -355,6 +355,11 @@ successful/failed-run cleanup, workflow locking, and Model display in native Sli
 deterministic geometry and checks serialized output equality. It excludes disk
 reading, saving, rendering, and lazy imports from the operation timings.
 
+The bundled WMA also streams CPU atlas labeling, reuses CPU registration workers,
+and fuses GPU registration probabilities without changing float64 precision.
+See the [CPU/GPU optimization record](../../doc/gpu/progress-2026-10-14-streaming.md)
+for correctness checks and bounded timings. No additional dependencies are needed.
+
 
 Slicer 5.2.2 on Linux was used to verify Extension Manager installation, the five current
 modules, node selection without SlicerDMRI, CPU/GPU labeling agreement, affine

@@ -20,7 +20,7 @@ import os
 
 import numpy
 
-from .config import get_device, float32_enabled, config
+from .config import config
 
 from . import fiber_tensors
 
@@ -29,6 +29,9 @@ def cpu_threads(requested=None):
     """Number of worker threads for the CPU backend (WMA_CPU_THREADS)."""
 
     if requested:
+        if int(requested) < 0:
+            from joblib import effective_n_jobs
+            return effective_n_jobs(int(requested))
         return int(requested)
     if config.cpu_threads:
         return int(config.cpu_threads)
@@ -36,11 +39,11 @@ def cpu_threads(requested=None):
 
 
 def _tile_rows(m, points_per_fiber, dtype_bytes, threads):
-    """Rows per tile targeting ~250 MB of temporaries per thread."""
+    """Keep distance temporaries small enough for CPU cache reuse."""
 
     bytes_per_row = m * points_per_fiber * dtype_bytes * 6
-    rows = int((250 * 1024 * 1024) // max(1, bytes_per_row))
-    return max(1, rows)
+    budget = (1 if threads == 1 else 8) * 1024 * 1024
+    return max(1, int(budget // max(1, bytes_per_row)))
 
 
 def _pointwise_squared_distance(q, f):
@@ -59,12 +62,11 @@ def _pointwise_squared_distance(q, f):
     numpy.square(dx, out=dx)
     dy = fy - qy
     numpy.square(dy, out=dy)
-    dz = fz - qz
-    numpy.square(dz, out=dz)
-
-    d2 = dx + dy
-    d2 += dz
-    return d2
+    dx += dy
+    numpy.subtract(fz, qz, out=dy)
+    numpy.square(dy, out=dy)
+    dx += dy
+    return dx
 
 
 def _reduce_points(d2, distance_method, threshold, sigmasq, points_per_fiber):
@@ -75,10 +77,10 @@ def _reduce_points(d2, distance_method, threshold, sigmasq, points_per_fiber):
         numpy.clip(d2, 0.0, None, out=d2)
 
     if distance_method == 'Mean':
-        d = numpy.sqrt(d2)
-        d = d.sum(-1)
-        d = d / float(points_per_fiber)
-        d = d * d
+        numpy.sqrt(d2, out=d2)
+        d = d2.sum(-1)
+        d /= float(points_per_fiber)
+        numpy.square(d, out=d)
     elif distance_method == 'Hausdorff':
         d = d2.max(-1)
     elif distance_method == 'MeanSquared':
@@ -98,7 +100,7 @@ def _fiber_block_distances(q, f, threshold, distance_method, sigmasq):
     points_per_fiber = q.shape[1]
     fwd = _reduce_points(_pointwise_squared_distance(q, f),
                          distance_method, threshold, sigmasq, points_per_fiber)
-    q_rev = numpy.ascontiguousarray(numpy.flip(q, axis=1))
+    q_rev = q[:, ::-1]
     rev = _reduce_points(_pointwise_squared_distance(q_rev, f),
                          distance_method, threshold, sigmasq, points_per_fiber)
 
@@ -107,9 +109,22 @@ def _fiber_block_distances(q, f, threshold, distance_method, sigmasq):
     return numpy.minimum(fwd, rev)
 
 
+def _distance_block(q, fixed, threshold, distance_method, bilateral, sigmasq):
+    d = _fiber_block_distances(q, fixed, threshold, distance_method, sigmasq)
+    if bilateral:
+        reflected = q.copy()
+        reflected[:, :, 0] *= -1
+        other = _fiber_block_distances(reflected, fixed, threshold, distance_method, sigmasq)
+        if distance_method == 'StrictSimilarity':
+            numpy.maximum(d, other, out=d)
+        else:
+            numpy.minimum(d, other, out=d)
+    return d
+
+
 def _distance_matrix(Xn, Xm, threshold, distance_method='Hausdorff',
                      bilateral=False, sigmasq=6400, gpu_float32=None,
-                     tile_rows=None, number_of_jobs=None):
+                     tile_rows=None, number_of_jobs=None, executor=None):
     """(n, P, 3) queries x (m, P, 3) fixed -> (n, m) float64 distance
     matrix (row i = query fiber i vs all fixed fibers), computed on
     tiled blocks over threads. Results are independent of threading.
@@ -122,18 +137,7 @@ def _distance_matrix(Xn, Xm, threshold, distance_method='Hausdorff',
     n = Xn.shape[0]
 
     def compute(s, e):
-        q = Xn[s:e]
-        d = _fiber_block_distances(q, Xm, threshold, distance_method, sigmasq)
-        if bilateral:
-            q_reflect = q.copy()
-            q_reflect[:, :, 0] = -q_reflect[:, :, 0]
-            d_reflect = _fiber_block_distances(q_reflect, Xm, threshold,
-                                               distance_method, sigmasq)
-            if distance_method == 'StrictSimilarity':
-                numpy.maximum(d, d_reflect, out=d)
-            else:
-                numpy.minimum(d, d_reflect, out=d)
-        return d
+        return _distance_block(Xn[s:e], Xm, threshold, distance_method, bilateral, sigmasq)
 
     if n <= tr:
         return compute(0, n)
@@ -148,11 +152,65 @@ def _distance_matrix(Xn, Xm, threshold, distance_method='Hausdorff',
 
     if workers == 1:
         fill(0)
+    elif executor is not None:
+        list(executor.map(fill, range(workers)))
     else:
         from concurrent.futures import ThreadPoolExecutor
         with ThreadPoolExecutor(max_workers=workers) as pool:
             list(pool.map(fill, range(workers)))
     return out
+
+
+def atlas_label(input_polydata, atlas, number_of_jobs=None):
+    """Stream CPU distances and project only the required embedding columns.
+
+    Retain O(N * embedding_columns) results, not the full O(N * atlas_size)
+    similarity/projection matrices. Reuse distance workers across blocks.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+    import scipy.cluster.vq
+
+    queries = fiber_tensors.polydata_to_numpy(input_polydata, 15, coordinate_major=True)
+    fixed = fiber_tensors.polydata_to_numpy(atlas.nystrom_polydata, 15, coordinate_major=True)
+    count = atlas.number_of_eigenvectors + 1
+    vectors = numpy.ascontiguousarray(atlas.e_vec[:, -count:])
+    reciprocal = numpy.divide(1., atlas.e_val[-count:])
+    norm = atlas.e_vec_norm[-count:]
+    dhat_a = numpy.sqrt(numpy.divide(1., atlas.row_sum_1))
+    n = len(queries)
+    embed = numpy.empty((n, atlas.number_of_eigenvectors))
+    rows = numpy.empty(n)
+    columns = numpy.empty(n)
+    labels = numpy.empty(n, dtype=numpy.int32)
+    distances = numpy.empty(n)
+    # Target 8 MiB for the similarity block, independently of subject size.
+    block_rows = max(1, min(512, (8 * 1024 * 1024) // (8 * max(1, len(fixed)))))
+    threads = cpu_threads(number_of_jobs)
+    with ThreadPoolExecutor(max_workers=threads) as pool:
+        for start in range(0, n, block_rows):
+            stop = min(n, start + block_rows)
+            B = _distance_matrix(queries[start:stop], fixed, atlas.threshold,
+                atlas.distance_method, atlas.bilateral,
+                number_of_jobs=threads, executor=pool).T
+            if atlas.distance_method != 'StrictSimilarity':
+                numpy.negative(B, out=B)
+                B /= atlas.sigma * atlas.sigma
+                numpy.exp(B, out=B)
+            row_sum = B.sum(0) + numpy.dot(atlas.row_sum_matrix, B)
+            if numpy.any(row_sum <= 0):
+                print(f"<{__name__}> Warning: negative row sum approximations:",
+                      numpy.count_nonzero(row_sum <= 0))
+                row_sum[row_sum < 0] = .1
+            rows[start:stop] = row_sum
+            B *= dhat_a[:, None] * numpy.sqrt(1. / row_sum)[None, :]
+            columns[start:stop] = B.sum(0)
+            V = numpy.dot(B.T, vectors)
+            V *= reciprocal
+            V /= norm
+            embed[start:stop] = V[:, -2::-1] / V[:, -1:]
+            labels[start:stop], distances[start:stop] = scipy.cluster.vq.vq(
+                embed[start:stop], atlas.centroids)
+    return embed, labels, distances, numpy.concatenate((atlas.row_sum_1, rows)), columns
 
 
 def pairwise_distance_matrix(input_polydata, threshold,
@@ -161,7 +219,7 @@ def pairwise_distance_matrix(input_polydata, threshold,
                              gpu_float32=None, tile_rows=None):
     """CPU-fast equivalent of cluster._pairwise_distance_matrix."""
 
-    X = fiber_tensors.polydata_to_numpy(input_polydata, points_per_fiber)
+    X = fiber_tensors.polydata_to_numpy(input_polydata, points_per_fiber, coordinate_major=True)
     return _distance_matrix(X, X, threshold, distance_method, bilateral,
                             sigmasq, gpu_float32, tile_rows)
 
@@ -173,8 +231,8 @@ def rectangular_distance_matrix(input_polydata_n, input_polydata_m, threshold,
     """CPU-fast equivalent of cluster._rectangular_distance_matrix;
     returns the (n, m) matrix BEFORE the transpose applied by cluster.py."""
 
-    Xn = fiber_tensors.polydata_to_numpy(input_polydata_n, points_per_fiber)
-    Xm = fiber_tensors.polydata_to_numpy(input_polydata_m, points_per_fiber)
+    Xn = fiber_tensors.polydata_to_numpy(input_polydata_n, points_per_fiber, coordinate_major=True)
+    Xm = fiber_tensors.polydata_to_numpy(input_polydata_m, points_per_fiber, coordinate_major=True)
     return _distance_matrix(Xn, Xm, threshold, distance_method, bilateral,
                             sigmasq, gpu_float32, tile_rows)
 
@@ -185,7 +243,7 @@ def pairwise_distance_matrix_from_fiber_array(fiber_array, threshold,
                                               gpu_float32=None, tile_rows=None):
     """Pairwise matrix from an already converted fibers.FiberArray."""
 
-    X = fiber_tensors.fiber_array_to_numpy(fiber_array)
+    X = fiber_tensors.fiber_array_to_numpy(fiber_array, coordinate_major=True)
     return _distance_matrix(X, X, threshold, distance_method, bilateral,
                             sigmasq, gpu_float32, tile_rows)
 
@@ -212,8 +270,9 @@ def transform_fiber_array(in_array, transform, mode=(1, 1, 1, 1)):
     application used on the GPU (bit-identical to the per-point
     vtkTransform loop, see gpu.registration)."""
 
-    from .registration import transform_matrix_from_vtk
-    M = transform_matrix_from_vtk(transform, list(mode))
+    from ..register_two_subjects import convert_transform_to_vtk
+    matrix = convert_transform_to_vtk(transform, scaled=True, mode=list(mode)).GetMatrix()
+    M = numpy.array([[matrix.GetElement(i, j) for j in range(4)] for i in range(4)])
     x = in_array[0]
     y = in_array[1]
     z = in_array[2]
@@ -224,7 +283,7 @@ def transform_fiber_array(in_array, transform, mode=(1, 1, 1, 1)):
     return out
 
 
-def inner_loop_objective(fixed, moving, sigmasq, chunk_rows=None, threads=None):
+def inner_loop_objective(fixed, moving, sigmasq, chunk_rows=None, threads=None, executor=None):
     """CPU fast inner_loop_objective (register_two_subjects.py:305-330):
     batched over moving fibers with the same per-element operations and
     summation structures as the per-fiber original."""
@@ -233,48 +292,31 @@ def inner_loop_objective(fixed, moving, sigmasq, chunk_rows=None, threads=None):
     points_per_fiber = fixed.shape[2]
     n_moving = moving.shape[1]
 
-    if chunk_rows is None:
-        chunk_rows = max(1, int(2.5e8 // max(1, n_fixed * points_per_fiber * 8 * 5)))
     threads = cpu_threads(threads)
+    if chunk_rows is None:
+        chunk_rows = _tile_rows(n_fixed, points_per_fiber, 8, threads)
 
-    fx = fixed[0]
-    fy = fixed[1]
-    fz = fixed[2]
+    fixed = fixed.transpose(1, 2, 0)
+    moving = moving.transpose(1, 2, 0)
     probability = numpy.empty(n_moving, dtype=numpy.float64)
 
-    s = 0
-    while s < n_moving:
-        e = min(s + chunk_rows, n_moving)
-        qx = moving[0, s:e]
-        qy = moving[1, s:e]
-        qz = moving[2, s:e]
+    workers = min(threads, (n_moving + chunk_rows - 1) // chunk_rows)
 
-        # forward point order (register_two_subjects.py:366-375):
-        # squared componentwise, summed dx+dy+dz, mean over points
-        dx = fx[None, :, :] - qx[:, None, :]
-        numpy.square(dx, out=dx)
-        dy = fy[None, :, :] - qy[:, None, :]
-        numpy.square(dy, out=dy)
-        dz = fz[None, :, :] - qz[:, None, :]
-        numpy.square(dz, out=dz)
-        d2 = dx + dy
-        d2 += dz
-        dist_fwd = d2.mean(-1)
+    def fill(worker):
+        for s in range(worker * chunk_rows, n_moving, workers * chunk_rows):
+            e = min(s + chunk_rows, n_moving)
+            dist = _fiber_block_distances(moving[s:e], fixed, 0., 'MeanSquared', sigmasq)
+            probability[s:e] = numpy.exp(-dist / sigmasq).sum(1)
 
-        # reversed point order of the moving fiber (:361-364)
-        dx = fx[None, :, :] - qx[:, None, ::-1]
-        numpy.square(dx, out=dx)
-        dy = fy[None, :, :] - qy[:, None, ::-1]
-        numpy.square(dy, out=dy)
-        dz = fz[None, :, :] - qz[:, None, ::-1]
-        numpy.square(dz, out=dz)
-        d2 = dx + dy
-        d2 += dz
-        dist_rev = d2.mean(-1)
-
-        dist = numpy.minimum(dist_fwd, dist_rev)
-        probability[s:e] = numpy.exp(-dist / sigmasq).sum(1)
-        s = e
+    if workers <= 1:
+        if workers:
+            fill(0)
+    elif executor is not None:
+        list(executor.map(fill, range(workers)))
+    else:
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            list(pool.map(fill, range(workers)))
 
     # register_two_subjects.py:315-329: floor before dividing by n_fixed
     probability = probability + 1e-20

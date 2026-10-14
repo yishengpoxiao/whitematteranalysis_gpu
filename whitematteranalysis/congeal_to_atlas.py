@@ -211,7 +211,8 @@ class SubjectToAtlasRegistration:
         out_fname = os.path.join(outdir, self.subject_id + '_reg.vtk')
         print(self.subject_id, " Transforming ", self.input_polydata_filename, "->", out_fname, "...")
 
-        pd = wma.io.read_polydata(self.input_polydata_filename)
+        # set_subject retains the full input, before registration-only filtering.
+        pd = self.subject_polydata
 
         transformer = vtk.vtkTransformPolyDataFilter()
         if (vtk.vtkVersion().GetVTKMajorVersion() >= 6.0):

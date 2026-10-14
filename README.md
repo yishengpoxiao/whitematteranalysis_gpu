@@ -54,6 +54,12 @@ their own Backend selection. Some CLI tools also expose `-gpu auto|on|off`,
 `-gpu_float32`, and `-gpu_devices`; check the individual tool's `--help`.
 See [GPU development and validation records](doc/gpu/) for tested behavior and measurements.
 
+CPU atlas labeling streams similarity blocks and computes only the required
+embedding columns. CPU registration reuses tiled worker pools; GPU registration
+fuses distance and probability calculations when Triton is available. See the
+[CPU/GPU optimization measurements](doc/gpu/progress-2026-10-14-streaming.md)
+for numerical checks, stage timings, and their scope.
+
 ## 3D Slicer extension
 
 Use the [universal installer](slicer/WMAGPU/dist/WMAGPU-Installer.zip).

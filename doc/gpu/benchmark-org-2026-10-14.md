@@ -93,12 +93,17 @@ The Slicer inverse-transform row includes its nested hardening script; that nest
 measurement is not counted twice. Total time also includes shell/interpreter
 startup and directory checks outside the stage wrappers.
 
-The CPU matrix mode did not accelerate this case. Both CPU branches retain the
+The CPU matrix mode did not accelerate this case. In the benchmark snapshots,
+both CPU branches retain the
 full similarity matrix and project onto all 2500 stored atlas eigenvectors before
 selecting the required embedding columns; the fused GPU path projects only onto
 the 11 required columns. The matrix implementation, CPU/cache contention, and
 large-file I/O all contribute to these full-run timings. This comparison does not
 isolate a CPU distance-kernel speedup from those other costs.
+
+Subsequent [CPU streaming and GPU registration changes](progress-2026-10-14-streaming.md)
+remove the accelerated CPU path's full matrices and discarded projections.
+Their bounded measurements are separate from this historical full-case table.
 
 ## Output validation
 

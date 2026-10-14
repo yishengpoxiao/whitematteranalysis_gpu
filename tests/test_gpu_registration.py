@@ -15,6 +15,25 @@ from whitematteranalysis.register_two_subjects import (
 
 @unittest.skipUnless(wma.gpu.available(), 'CUDA is required')
 class RegistrationTests(unittest.TestCase):
+    def test_eager_objective_matches_committed_baseline(self):
+        import torch
+        from test_output_pipeline import baseline_module
+        original = baseline_module('whitematteranalysis.gpu._eagerbaseline',
+                                   'gpu/registration.py', '60c7b2d')
+        rng = np.random.RandomState(43)
+        for points in (1, 10, 15, 32, 50):
+            fixed = gpu._prepare_fixed(rng.normal(size=(3, 257, points)) * 40.,
+                                       'cuda', torch.float64)
+            moving = gpu._prepare_fixed(rng.normal(size=(3, 17, points)) * 40.,
+                                        'cuda', torch.float64)
+            before_fixed, before_moving = fixed.clone(), moving.clone()
+            with patch.object(registration_kernel, 'triton', None):
+                for sigma in (100., 400., 1e6):
+                    expected = original._pairwise_probability(fixed, moving, sigma)
+                    self.assertTrue(torch.equal(gpu._pairwise_probability(fixed, moving, sigma), expected))
+            self.assertTrue(torch.equal(fixed, before_fixed))
+            self.assertTrue(torch.equal(moving, before_moving))
+
     def test_fused_objective(self):
         rng = np.random.RandomState(42)
         fixed = rng.normal(size=(3, 31, 10)) * 40
@@ -166,6 +185,32 @@ class RegistrationTests(unittest.TestCase):
 
 
 class CPURegistrationTests(unittest.TestCase):
+    def test_optimizer_reuses_cpu_workers_and_closes_on_failure(self):
+        reg = RegisterTractography()
+        rng = np.random.RandomState(322)
+        reg.fixed, reg.moving = rng.normal(size=(3, 512, 10)), rng.normal(size=(3, 128, 10))
+        reg.use_gpu, reg.maxfun = False, 3
+        cpu = wma.gpu.cpu_backend
+        original = cpu.inner_loop_objective
+        executors = []
+
+        def record(*args, **kwargs):
+            executors.append(kwargs['executor'])
+            return original(*args, **kwargs)
+
+        with patch.object(cpu, 'cpu_threads', return_value=4), \
+                patch.object(cpu, 'inner_loop_objective', side_effect=record):
+            reg.compute()
+        self.assertGreater(len(executors), 1)
+        self.assertTrue(all(pool is executors[0] for pool in executors))
+        self.assertTrue(executors[0]._shutdown)
+        self.assertIsNone(reg._cpu_executor)
+        with patch.object(cpu, 'cpu_threads', return_value=4), \
+                patch.object(cpu, 'inner_loop_objective', side_effect=RuntimeError('worker failed')):
+            with self.assertRaisesRegex(RuntimeError, 'worker failed'):
+                reg.compute()
+        self.assertIsNone(reg._cpu_executor)
+
     def test_cpu_optimizer_never_prepares_cuda_data(self):
         rng = np.random.RandomState(321)
         reg = RegisterTractography()

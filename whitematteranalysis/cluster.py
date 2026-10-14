@@ -609,35 +609,12 @@ def spectral_atlas_label(input_polydata, atlas, number_of_jobs=2,
         embed, cluster_idx, dist, row_sum, b_col_sums = \
             gpu.linalg.atlas_label_embedding_blocks(blocks, atlas, number_fibers)
 
-    elif gpu.config.cpu_fast_enabled() and gpu.distance.distance_supported(
+    elif gpu.config.cpu_fast_enabled() and gpu.fiber_tensors.distance_supported(
             atlas.distance_method):
 
-        # vectorized CPU backend for the similarity matrix, then the
-        # original (fast, small) numpy steps for embedding/labeling
-        print(f"<{os.path.basename(__file__)}> Computing rectangular similarity matrix with the vectorized CPU backend.")
-        B = gpu.cpu_backend.rectangular_distance_matrix(
-            input_polydata, atlas.nystrom_polydata,
-            atlas.threshold, distance_method=atlas.distance_method,
-            bilateral=atlas.bilateral).T
-        if atlas.distance_method != 'StrictSimilarity':
-            B = numpy.exp(-B / (atlas.sigma * atlas.sigma))
-
-        row_sum_2 = numpy.sum(B, axis=0) + numpy.dot(atlas.row_sum_matrix, B)
-        if any(row_sum_2 <= 0):
-            print(f"<{os.path.basename(__file__)}> Warning: Consider increasing sigma or using the Mean distance. negative row sum approximations.")
-            print("Number of negative row sums:", numpy.count_nonzero(row_sum_2 <= 0))
-            row_sum_2[row_sum_2 < 0] = 0.1
-        row_sum = numpy.concatenate((atlas.row_sum_1, row_sum_2))
-        dhat = numpy.sqrt(numpy.divide(1, row_sum))
-        B = numpy.multiply(B, numpy.outer(dhat[0:sz], dhat[sz:].T))
-        V = numpy.dot(numpy.dot(B.T, atlas.e_vec), \
-                          numpy.diag(numpy.divide(1.0, atlas.e_val)))
-        V = numpy.divide(V, atlas.e_vec_norm)
-        embed = numpy.zeros((number_fibers, atlas.number_of_eigenvectors))
-        for i in range(0, atlas.number_of_eigenvectors):
-            embed[:, i] = numpy.divide(V[:, -(i + 2)], V[:, -1])
-        cluster_idx, dist = scipy.cluster.vq.vq(embed, atlas.centroids)
-        b_col_sums = numpy.sum(B.T, axis=1)
+        print(f"<{os.path.basename(__file__)}> Computing streamed CPU similarity and embedding.")
+        embed, cluster_idx, dist, row_sum, b_col_sums = gpu.cpu_backend.atlas_label(
+            input_polydata, atlas, number_of_jobs=number_of_jobs)
 
     else:
         # 1) Compute fiber similarities (original joblib backend).
@@ -725,7 +702,7 @@ def _rectangular_distance_matrix(input_polydata_n, input_polydata_m, threshold,
             distance_method=distance_method, bilateral=bilateral,
             gpu_float32=gpu_float32).T
 
-    elif gpu.config.cpu_fast_enabled() and gpu.distance.distance_supported(
+    elif gpu.config.cpu_fast_enabled() and gpu.fiber_tensors.distance_supported(
             distance_method, landmarks_n=landmarks_n, landmarks_m=landmarks_m):
 
         # vectorized multi-threaded numpy backend: same numbers as the
@@ -789,7 +766,8 @@ def _rectangular_similarity_matrix(input_polydata_n, input_polydata_m, threshold
         return similarity_matrix
 
     distances = _rectangular_distance_matrix(input_polydata_n, input_polydata_m, threshold,
-                                             number_of_jobs, landmarks_n, landmarks_m, distance_method, bilateral=bilateral)
+                                             number_of_jobs, landmarks_n, landmarks_m, distance_method,
+                                             bilateral=bilateral, use_gpu=use_gpu, gpu_float32=gpu_float32)
 
     if distance_method == 'StrictSimilarity':
         similarity_matrix = distances
@@ -826,7 +804,7 @@ def _pairwise_distance_matrix(input_polydata, threshold,
             input_polydata, threshold, distance_method=distance_method,
             bilateral=bilateral, sigmasq=sigmasq, gpu_float32=gpu_float32)
 
-    elif gpu.config.cpu_fast_enabled() and gpu.distance.distance_supported(
+    elif gpu.config.cpu_fast_enabled() and gpu.fiber_tensors.distance_supported(
             distance_method, landmarks=landmarks):
 
         print(f"<{os.path.basename(__file__)}> Computing pairwise distance matrix with the vectorized CPU backend.")
@@ -899,7 +877,8 @@ def _pairwise_similarity_matrix(input_polydata, threshold, sigma,
         return similarity_matrix
 
     distances = _pairwise_distance_matrix(input_polydata, threshold,
-                                          number_of_jobs, landmarks, distance_method, bilateral=bilateral)
+                                          number_of_jobs, landmarks, distance_method, bilateral=bilateral,
+                                          use_gpu=use_gpu, gpu_float32=gpu_float32)
     
     if distance_method == 'StrictSimilarity':
         similarity_matrix = distances

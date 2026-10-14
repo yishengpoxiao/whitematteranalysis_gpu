@@ -1,6 +1,7 @@
 """CPU distance work must honor tile bounds at every worker count."""
 
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
 
 import numpy as np
@@ -16,6 +17,23 @@ def fiber_array(values):
 
 
 class CPUTilingTests(unittest.TestCase):
+    def test_joblib_worker_counts(self):
+        from joblib import effective_n_jobs
+        for requested in (1, 4, -1, -2):
+            self.assertEqual(cpu.cpu_threads(requested), effective_n_jobs(requested))
+
+    def test_parallel_objective_matches_original(self):
+        rng = np.random.RandomState(22)
+        for points in (1, 7, 10, 15, 20):
+            fixed, moving = rng.normal(size=(3, 31, points)), rng.normal(size=(3, 17, points))
+            for sigma in (1e-5, 100., 1e6):
+                expected = wma.register_two_subjects.inner_loop_objective(fixed, moving, sigma)
+                for workers in (1, 4):
+                    with ThreadPoolExecutor(max_workers=workers) as pool:
+                        actual = cpu.inner_loop_objective(fixed, moving, sigma,
+                            chunk_rows=3, threads=workers, executor=pool)
+                    self.assertEqual(actual, expected)
+
     def test_tiled_distance_matches_original_and_limits_temporaries(self):
         rng = np.random.RandomState(21)
         queries, fixed = rng.normal(size=(13, 5, 3)), rng.normal(size=(7, 5, 3))
