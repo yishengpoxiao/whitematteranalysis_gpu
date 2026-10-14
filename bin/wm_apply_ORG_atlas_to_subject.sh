@@ -19,8 +19,8 @@ Optional arguments:
             nonrig: affine + nonrigid (2 stages) : this enables nonrigid deformations of the fibers. This mode
                                               needs the input tractography to be similar to the atlas tractography,
                                               e.g. two-tensor UKF tractography + HCP dMRI acquisition.
-     -n:  Number of threads (default = 1). If multiple cores are available, recommended setting is 4.
-          Increasing the number of threads does not speed up too much, but it requires more computational resources.) 
+     -n:  Number of workers for clustering and independent cluster-file processing (default = 1).
+          Four workers are recommended when at least four CPU cores are available.
      -g:  GPU acceleration: auto, on, or off (default: WMA_GPU environment variable, otherwise auto).
           Use -g off with WMA_CPU_FAST=0 for original joblib, or WMA_CPU_FAST=1 for CPU matrix acceleration.
      -x:  If the job is being run in an environment without a X client, a virtual X server environment is needed (for 
@@ -217,7 +217,7 @@ if [ "$TfmFile" ]; then
     echo ""
     echo "ERROR: Transformation file not found."
     echo ""
-    exit
+    exit 1
   else
     echo "<wm_harden_transform.py> Apply transformation with file: " "$TfmFile"
     if [ $VX == 0 ]; then
@@ -269,7 +269,7 @@ if [ ! -f $RegTractography ]; then
 	echo ""
 	echo "ERROR: Tractography registration failed. The output registered tractography data can not be found."
 	echo ""
-	exit
+	exit 1
 fi
 
 # Get the case ID for fiber clustering
@@ -292,7 +292,7 @@ if [ $numfiles -lt 800 ]; then
 	echo ""
 	echo "ERROR: Initial fiber clustering failed. There should be 800 resulting fiber clusters, but only $numfiles generated."
 	echo ""
-	exit
+	exit 1
 fi
 
 echo "<wm_apply_ORG_atlas_to_subject> Outlier fiber removal."
@@ -311,14 +311,14 @@ if [ $numfiles -lt 800 ]; then
 	echo ""
 	echo "ERROR: Outlier removal failed. There should be 800 resulting fiber clusters, but only $numfiles generated."
 	echo ""
-	exit
+	exit 1
 fi
 
 echo "<wm_apply_ORG_atlas_to_subject> Hemisphere location assessment in the atlas space."
 if [ ! -f $FiberClusteringOutlierRemFolder/${FCcaseID}_outlier_removed/cluster_location_by_hemisphere.log ]; then
 	wm_assess_cluster_location_by_hemisphere.py \
-		-clusterLocationFile $FCAtlasFolder/cluster_hemisphere_location.txt \
-		$FiberClusteringOutlierRemFolder/${FCcaseID}_outlier_removed 
+		-j "$NumThreads" -clusterLocationFile "$FCAtlasFolder/cluster_hemisphere_location.txt" \
+		"$FiberClusteringOutlierRemFolder/${FCcaseID}_outlier_removed" || exit 1
 else
 	echo " - hemisphere location assessment has been done."
 fi
@@ -328,7 +328,7 @@ if [ ! -f $FiberClusteringOutlierRemFolder/${FCcaseID}_outlier_removed/cluster_l
 	echo ""
 	echo "ERROR: Hemisphere location assessment failed. There should a cluster_location_by_hemisphere.log file, stating: \"<wm_assess_cluster_location_by_hemisphere.py> Done!!!\" "
 	echo ""
-	exit
+	exit 1
 fi
 
 echo "<wm_apply_ORG_atlas_to_subject> Transform fiber clusters back to input tractography space."
@@ -337,13 +337,13 @@ if [ "$RegMode" == "rig" ]; then
 	
 	tfm=$RegistrationFolder/${caseID}/output_tractography/itk_txform_${caseID}.tfm
 	
-	if [ ! -f $FiberClustersInTractographySpace/cluster_00800.vtp ]; then
+	if [ ! -f "$FiberClustersInTractographySpace/transform_complete.log" ]; then
 		if [ $VX == 0 ]; then
-			wm_harden_transform.py -i -t $tfm \
-				$FiberClusteringOutlierRemFolder/${FCcaseID}_outlier_removed $FiberClustersInTractographySpace "$SlicerPath"
+			wm_harden_transform.py -j "$NumThreads" -i -t "$tfm" \
+				"$FiberClusteringOutlierRemFolder/${FCcaseID}_outlier_removed" "$FiberClustersInTractographySpace" "$SlicerPath" || exit 1
 		else
-			xvfb-run -a wm_harden_transform.py -i -t $tfm \
-				$FiberClusteringOutlierRemFolder/${FCcaseID}_outlier_removed $FiberClustersInTractographySpace "$SlicerPath"
+			xvfb-run -a wm_harden_transform.py -j "$NumThreads" -i -t "$tfm" \
+				"$FiberClusteringOutlierRemFolder/${FCcaseID}_outlier_removed" "$FiberClustersInTractographySpace" "$SlicerPath" || exit 1
 		fi
 	else
 		echo " - transform has been done."
@@ -352,13 +352,13 @@ elif [ "$RegMode" == "nonrig" ]; then
 
 	tfm=$RegistrationFolder/${caseID}_reg/output_tractography/itk_txform_${caseID}_reg.tfm
 	
-	if [ ! -f $FiberClustersInTractographySpace/tmp/cluster_00800.vtp ]; then
+	if [ ! -f "$FiberClustersInTractographySpace/tmp/transform_complete.log" ]; then
 		if [ $VX == 0 ]; then
-			wm_harden_transform.py -i -t $tfm \
-				$FiberClusteringOutlierRemFolder/${FCcaseID}_outlier_removed $FiberClustersInTractographySpace/tmp "$SlicerPath"
+			wm_harden_transform.py -j "$NumThreads" -i -t "$tfm" \
+				"$FiberClusteringOutlierRemFolder/${FCcaseID}_outlier_removed" "$FiberClustersInTractographySpace/tmp" "$SlicerPath" || exit 1
 		else
-			xvfb-run -a wm_harden_transform.py -i -t $tfm \
-				$FiberClusteringOutlierRemFolder/${FCcaseID}_outlier_removed $FiberClustersInTractographySpace/tmp "$SlicerPath"
+			xvfb-run -a wm_harden_transform.py -j "$NumThreads" -i -t "$tfm" \
+				"$FiberClusteringOutlierRemFolder/${FCcaseID}_outlier_removed" "$FiberClustersInTractographySpace/tmp" "$SlicerPath" || exit 1
 		fi
 	else
 		echo " - transform has been done."
@@ -366,13 +366,13 @@ elif [ "$RegMode" == "nonrig" ]; then
 
 	tfm=$RegistrationFolder/${caseID}/output_tractography/itk_txform_${caseID}.tfm
 	
-	if [ ! -f $FiberClustersInTractographySpace/cluster_00800.vtp ]; then
+	if [ ! -f "$FiberClustersInTractographySpace/transform_complete.log" ]; then
 		if [ $VX == 0 ]; then
-			wm_harden_transform.py -i -t $tfm \
-				$FiberClustersInTractographySpace/tmp $FiberClustersInTractographySpace "$SlicerPath"
+			wm_harden_transform.py -j "$NumThreads" -i -t "$tfm" \
+				"$FiberClustersInTractographySpace/tmp" "$FiberClustersInTractographySpace" "$SlicerPath" || exit 1
 		else
-			xvfb-run -a wm_harden_transform.py -i -t $tfm \
-				$FiberClustersInTractographySpace/tmp $FiberClustersInTractographySpace "$SlicerPath"
+			xvfb-run -a wm_harden_transform.py -j "$NumThreads" -i -t "$tfm" \
+				"$FiberClustersInTractographySpace/tmp" "$FiberClustersInTractographySpace" "$SlicerPath" || exit 1
 		fi
 	else
 		echo " - transform has been done."
@@ -386,14 +386,14 @@ if [ $numfiles -lt 800 ]; then
 	echo ""
 	echo "ERROR: Transforming fiber clusters failed. There should be 800 resulting fiber clusters, but only $numfiles generated."
 	echo ""
-	exit
+	exit 1
 fi
 
 echo "<wm_apply_ORG_atlas_to_subject> Separate fiber clusters by hemisphere."
 SeparatedClustersFolder=$OutputCaseFolder/FiberClustering/SeparatedClusters
-if [ ! -f $SeparatedClustersFolder/tracts_commissural/cluster_00800.vtp ]; then
+if [ ! -f "$SeparatedClustersFolder/hemisphere_separation_complete.log" ]; then
 
-	wm_separate_clusters_by_hemisphere.py $FiberClustersInTractographySpace $SeparatedClustersFolder
+	wm_separate_clusters_by_hemisphere.py -j "$NumThreads" "$FiberClustersInTractographySpace" "$SeparatedClustersFolder" || exit 1
 
 else
 	echo " - separation has been done."
@@ -406,7 +406,7 @@ if [ $numfiles -lt 800 ]; then
 	echo ""
 	echo "ERROR: Separating fiber clusters failed. There should be 800 resulting fiber clusters in each folder, but only $numfiles generated."
 	echo ""
-	exit
+	exit 1
 fi
 
 # Apply the inverse transformation if provided
@@ -417,7 +417,7 @@ if [ "$TfmFile" ]; then
     echo ""
     echo "ERROR: Transformation file not found."
     echo ""
-    exit
+    exit 1
   else
     echo "<wm_harden_transform.py> Apply inverse transformation with file: " "$TfmFile"
     mkdir $OutInvTfmTractographyDirnameRoot
@@ -445,9 +445,9 @@ else
   TractographyData=$SeparatedClustersFolder
 fi
 
-if [ ! -f $AnatomicalTractsFolder/T_UF_right.vtp ]; then
+if [ ! -f "$AnatomicalTractsFolder/anatomical_tracts_complete.log" ]; then
 	
-	wm_append_clusters_to_anatomical_tracts.py $TractographyData/ $FCAtlasFolder $AnatomicalTractsFolder
+	wm_append_clusters_to_anatomical_tracts.py -j "$NumThreads" "$TractographyData/" "$FCAtlasFolder" "$AnatomicalTractsFolder" || exit 1
 
 else
 	echo " - Appending clusters into anatomical tracts has been done."
@@ -456,11 +456,11 @@ echo ""
 
 numfiles=($AnatomicalTractsFolder/*vtp)
 numfiles=${#numfiles[@]}
-if [ $numfiles -lt 73 ]; then
+if [ $numfiles -lt 74 ]; then
 	echo ""
-	echo "ERROR: Appending clusters into anatomical tracts failed. There should be 73 resulting fiber clusters, but only $numfiles generated."
+	echo "ERROR: Appending clusters into anatomical tracts failed. There should be 74 resulting anatomical tracts, but only $numfiles generated."
 	echo ""
-	exit
+	exit 1
 fi
 
 if [ $DiffMeasure == 1 ]; then
@@ -497,7 +497,7 @@ if [ $DiffMeasure == 1 ]; then
 		echo ""
 		echo "ERROR: Reporting diffusion measurements of fiber clusters. failed. No diffusion measurement (.csv) files generated."
 		echo ""
-		exit
+		exit 1
 	fi
 
 fi
@@ -526,7 +526,7 @@ if [ $DiffMeasure == 1 ]; then
 		echo ""
 		echo "ERROR: Reporting diffusion measurements of fiber clusters. failed. No diffusion measurement (.csv) files generated."
 		echo ""
-		exit
+		exit 1
 	fi
 
 fi

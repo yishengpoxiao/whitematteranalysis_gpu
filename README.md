@@ -76,6 +76,11 @@ GPU bilateral comparisons share one fused launch; compiled CPU distances read
 packed reference coordinates. See the
 [bilateral and layout measurements](doc/gpu/progress-2026-10-15-bilateral-layout.md).
 
+The [complete ORG GPU case](doc/gpu/benchmark-org-2026-10-15-optimized.md)
+also verifies all cluster/anatomical files against the preceding run.
+Independent CLI file stages now honor the pipeline worker count, and VTP writing
+uses fast lossless compression. See the [file-stage record](doc/gpu/progress-2026-10-15-file-stages.md).
+
 ## 3D Slicer extension
 
 Use the [universal installer](slicer/WMAGPU/dist/WMAGPU-Installer.zip).

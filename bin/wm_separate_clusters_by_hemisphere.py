@@ -18,6 +18,9 @@ import shutil
 import vtk
 import glob
 import warnings
+from vtk.util.numpy_support import vtk_to_numpy
+
+from joblib import Parallel, delayed
 
 import whitematteranalysis as wma
 
@@ -40,12 +43,112 @@ def _build_arg_parser():
         'outputDirectory',
         help='The output directory will be created if it does not exist.')
 
+    parser.add_argument('-j', '--jobs', dest='number_of_jobs', type=int, default=1,
+                        help='Number of independent cluster-file workers (default: 1).')
+
     return parser
 
 
 def _parse_args(parser):
 
     return parser.parse_args()
+
+
+def list_cluster_files(input_dir):
+    # Find input files
+    input_mask = f"{input_dir}/cluster_*.vtk"
+    input_mask2 = f"{input_dir}/cluster_*.vtp"
+    input_pd_fnames = glob.glob(input_mask) + glob.glob(input_mask2)
+    input_pd_fnames = sorted(input_pd_fnames)
+    return(input_pd_fnames)
+
+
+def read_mask_location_from_vtk(inpd):
+
+    def _read_location(_inpd):
+        geometry = wma.filter._lines_offsets_connectivity(_inpd)
+        if geometry is not None:
+            offsets, connectivity, _ = geometry
+            nonempty = numpy.diff(offsets) > 0
+            values = vtk_to_numpy(array).reshape(-1, array.GetNumberOfComponents())[:, 0]
+            mask_location[nonempty] = values[connectivity[offsets[1:][nonempty] - 1]]
+            return True
+        _flag_location = True
+
+        _inpd.GetLines().InitTraversal()
+        for lidx in range(0, _inpd.GetNumberOfLines()):
+            ptids = vtk.vtkIdList()
+            _inpd.GetLines().GetNextCell(ptids)
+            for pidx in range(0, ptids.GetNumberOfIds()):
+                mask_location[lidx] = array.GetTuple(ptids.GetId(pidx))[0]
+
+        return _flag_location
+
+    mask_location = numpy.zeros(inpd.GetNumberOfLines())
+
+    inpointdata = inpd.GetPointData()
+    flag_location = False
+    if inpointdata.GetNumberOfArrays() > 0:
+        point_data_array_indices = list(range(inpointdata.GetNumberOfArrays()))
+        for idx in point_data_array_indices:
+            array = inpointdata.GetArray(idx)
+            if array.GetName() == 'HemisphereLocataion':
+                warnings.warn(
+                    wma.utils.hemisphere_loc_name_typo_warn_msg,
+                    PendingDeprecationWarning)
+                flag_location = _read_location(inpd)
+                break
+            elif array.GetName() == 'HemisphereLocation':
+                flag_location = _read_location(inpd)
+                break
+
+    return flag_location, mask_location
+
+
+def _process_cluster(fname, outdir):
+    outdir_right = os.path.join(outdir, "tracts_right_hemisphere")
+    outdir_left = os.path.join(outdir, "tracts_left_hemisphere")
+    outdir_commissure = os.path.join(outdir, "tracts_commissural")
+
+
+    # figure out filename and extension
+    fname_base = os.path.basename(fname)
+
+    # read data
+    print(f"<{os.path.basename(__file__)}> Separating input file:", fname)
+    pd = wma.io.read_polydata(fname)
+
+    flag_location, mask_location = read_mask_location_from_vtk(pd)
+
+     # If HemisphereLocation is not defined in the input vtk file, the location of each fiber in the cluster is decided.
+    if not flag_location:
+        print("Error:", fname, "has no hemisphere location information")
+        raise RuntimeError("Hemisphere labels are missing or incomplete: " + fname)
+
+    # Preserve the original unlabeled-fiber check.
+    if len(numpy.where(mask_location ==0)[0]) > 1:
+        print("Error: Not all fibers in", fname, "is labeled with hemisphere location information.")
+        raise RuntimeError("Hemisphere labels are missing or incomplete: " + fname)
+
+    # output separated clusters
+    mask_right = numpy.zeros(pd.GetNumberOfLines())
+    mask_left = numpy.zeros(pd.GetNumberOfLines())
+    mask_commissure = numpy.zeros(pd.GetNumberOfLines())
+
+    mask_left[numpy.where(mask_location==1)[0]] = 1
+    mask_right[numpy.where(mask_location==2)[0]] = 1
+    mask_commissure[numpy.where(mask_location==3)[0]] = 1
+
+    pd_right = wma.filter.mask(pd, mask_right, preserve_point_data=True, preserve_cell_data=True, verbose=False)
+    pd_left = wma.filter.mask(pd, mask_left, preserve_point_data=True, preserve_cell_data=True, verbose=False)
+    pd_commissure = wma.filter.mask(pd, mask_commissure, preserve_point_data=True, preserve_cell_data=True, verbose=False)
+
+    fname_output = os.path.join(outdir_right, fname_base)
+    wma.io.write_polydata(pd_right, fname_output)
+    fname_output = os.path.join(outdir_left, fname_base)
+    wma.io.write_polydata(pd_left, fname_output)
+    fname_output = os.path.join(outdir_commissure, fname_base)
+    wma.io.write_polydata(pd_commissure, fname_output)
 
 
 def main():
@@ -71,81 +174,13 @@ def main():
     outdir_commissure = os.path.join(outdir, 'tracts_commissural')
     if not os.path.exists(outdir_commissure):
         os.makedirs(outdir_commissure)
+    marker = os.path.join(outdir, 'hemisphere_separation_complete.log')
+    if os.path.exists(marker):
+        os.remove(marker)
     
     
-    def list_cluster_files(input_dir):
-        # Find input files
-        input_mask = f"{input_dir}/cluster_*.vtk"
-        input_mask2 = f"{input_dir}/cluster_*.vtp"
-        input_pd_fnames = glob.glob(input_mask) + glob.glob(input_mask2)
-        input_pd_fnames = sorted(input_pd_fnames)
-        return(input_pd_fnames)
     
-    def write_mask_location_to_vtk(inpd, mask_location):
     
-        inpointdata = inpd.GetPointData()
-        if inpointdata.GetNumberOfArrays() > 0:
-            point_data_array_indices = list(range(inpointdata.GetNumberOfArrays()))
-            for idx in point_data_array_indices:
-                array = inpointdata.GetArray(idx)
-                if array.GetName() == 'HemisphereLocataion':
-                    warnings.warn(
-                        wma.utils.hemisphere_loc_name_typo_warn_msg,
-                        PendingDeprecationWarning)
-                    print('  -- HemisphereLocataion is in the input data: skip updating the vtk file.')
-                    return inpd
-                elif array.GetName() == 'HemisphereLocation':
-                    print('  -- HemisphereLocation is in the input data: skip updating the vtk file.')
-                    return inpd
-    
-        vtk_array = vtk.vtkDoubleArray()
-        vtk_array.SetName('HemisphereLocation')
-    
-        inpd.GetLines().InitTraversal()
-        for lidx in range(0, inpd.GetNumberOfLines()):
-            ptids = vtk.vtkIdList()
-            inpd.GetLines().GetNextCell(ptids)
-            for pidx in range(0, ptids.GetNumberOfIds()):
-                vtk_array.InsertNextTuple1(mask_location[lidx])
-    
-        inpd.GetPointData().AddArray(vtk_array)
-        inpd.Update()
-    
-        return inpd
-    
-    def read_mask_location_from_vtk(inpd):
-
-        def _read_location(_inpd):
-            _flag_location = True
-
-            _inpd.GetLines().InitTraversal()
-            for lidx in range(0, _inpd.GetNumberOfLines()):
-                ptids = vtk.vtkIdList()
-                _inpd.GetLines().GetNextCell(ptids)
-                for pidx in range(0, ptids.GetNumberOfIds()):
-                    mask_location[lidx] = array.GetTuple(ptids.GetId(pidx))[0]
-
-            return _flag_location
-
-        mask_location = numpy.zeros(pd.GetNumberOfLines())
-    
-        inpointdata = inpd.GetPointData()
-        flag_location = False
-        if inpointdata.GetNumberOfArrays() > 0:
-            point_data_array_indices = list(range(inpointdata.GetNumberOfArrays()))
-            for idx in point_data_array_indices:
-                array = inpointdata.GetArray(idx)
-                if array.GetName() == 'HemisphereLocataion':
-                    warnings.warn(
-                        wma.utils.hemisphere_loc_name_typo_warn_msg,
-                        PendingDeprecationWarning)
-                    flag_location = _read_location(inpd)
-                    break
-                elif array.GetName() == 'HemisphereLocation':
-                    flag_location = _read_location(inpd)
-                    break
-    
-        return flag_location, mask_location
     
     print(f"<{os.path.basename(__file__)}> Starting computation.")
     print("")
@@ -166,46 +201,10 @@ def main():
     # this transform is the one to use.
     
     # read in data
-    for fname, c_idx in zip(input_polydatas, list(range(len(input_polydatas)))):
-    
-        # figure out filename and extension
-        fname_base = os.path.basename(fname)
-    
-        # read data
-        print(f"<{os.path.basename(__file__)}> Separating input file:", fname)
-        pd = wma.io.read_polydata(fname)
-    
-        flag_location, mask_location = read_mask_location_from_vtk(pd)
-           
-         # If HemisphereLocation is not defined in the input vtk file, the location of each fiber in the cluster is decided.
-        if not flag_location:
-            print("Error:", fname, "has no hemisphere location information")
-            exit()
-    
-        # for sanity check 
-        if len(numpy.where(mask_location ==0)[0]) > 1:
-            print("Error: Not all fibers in", fname, "is labeled with hemisphere location information.")
-            exit()
-    
-        # output separated clusters
-        mask_right = numpy.zeros(pd.GetNumberOfLines())
-        mask_left = numpy.zeros(pd.GetNumberOfLines())
-        mask_commissure = numpy.zeros(pd.GetNumberOfLines())
-    
-        mask_left[numpy.where(mask_location==1)[0]] = 1
-        mask_right[numpy.where(mask_location==2)[0]] = 1
-        mask_commissure[numpy.where(mask_location==3)[0]] = 1
-    
-        pd_right = wma.filter.mask(pd, mask_right, preserve_point_data=True, preserve_cell_data=True, verbose=False)
-        pd_left = wma.filter.mask(pd, mask_left, preserve_point_data=True, preserve_cell_data=True, verbose=False)
-        pd_commissure = wma.filter.mask(pd, mask_commissure, preserve_point_data=True, preserve_cell_data=True, verbose=False)
-    
-        fname_output = os.path.join(outdir_right, fname_base)
-        wma.io.write_polydata(pd_right, fname_output)
-        fname_output = os.path.join(outdir_left, fname_base)
-        wma.io.write_polydata(pd_left, fname_output)
-        fname_output = os.path.join(outdir_commissure, fname_base)
-        wma.io.write_polydata(pd_commissure, fname_output)
+    Parallel(n_jobs=args.number_of_jobs)(
+        delayed(_process_cluster)(fname, outdir) for fname in input_polydatas)
+    with open(marker, 'w') as stream:
+        stream.write('Hemisphere separation completed for %d clusters.\n' % len(input_polydatas))
     
     print("")
     print(f"<{os.path.basename(__file__)}> Done!!!")

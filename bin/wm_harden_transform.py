@@ -2,153 +2,85 @@
 # -*- coding: utf-8 -*-
 
 import argparse
-import os
-from joblib import Parallel, delayed
+from pathlib import Path
+import shutil
+import subprocess
+import tempfile
+from joblib import Parallel, delayed, effective_n_jobs
 
 import whitematteranalysis as wma
 
 
-
 def _build_arg_parser():
-
-    parser = argparse.ArgumentParser(
-        description="Harden transform with Slicer.",
-        epilog="Written by Fan Zhang, fzhang@bwh.harvard.edu")
-    parser.add_argument("-v", "--version",
-        action="version", default=argparse.SUPPRESS,
-        version='1.0',
-        help="Show program's version number and exit")
-    parser.add_argument(
-        'inputDirectory',
-        help='Directory of input VTK/VTP files that are going to be transformed.')
-    parser.add_argument(
-        'outputDirectory',
-        help='Directory of output transformed results.')
-    parser.add_argument(
-        'Slicer',
-        help='Path of 3D Slicer.')
-    parser.add_argument(
-        '-t', dest="transform_file",
-        help='Individual transform matrix file. If this is assigned, all input files will be transformed with this transform matrix.')
-    parser.add_argument(
-        '-ts', dest="transform_folder",
-        help='Folder of multiple transform matrix files. If this is assigned, input files will be transformed with different transform matrices. Make sure that the input and transform files match each other in alphabetical order.')
-    parser.add_argument(
-        '-i', action = 'store_true', dest = "inverse_transform",
-        help='Inverse transform if given.')
-    parser.add_argument(
-        '-j', action="store", dest="numberOfJobs", type=int,
-        help='Number of processors to use.')
-
+    parser = argparse.ArgumentParser(description="Harden transforms with independent Slicer processes.",
+                                     epilog="Original script by Fan Zhang, fzhang@bwh.harvard.edu.")
+    parser.add_argument('-v', '--version', action='version', version='1.0')
+    parser.add_argument('inputDirectory', help='Directory of input VTK/VTP files.')
+    parser.add_argument('outputDirectory', help='Directory of transformed results.')
+    parser.add_argument('Slicer', help='Path of 3D Slicer.')
+    transforms = parser.add_mutually_exclusive_group(required=True)
+    transforms.add_argument('-t', dest='transform_file', help='One transform for all input files.')
+    transforms.add_argument('-ts', dest='transform_folder', help='Sorted transforms matching sorted input files.')
+    parser.add_argument('-i', action='store_true', dest='inverse_transform', help='Invert the transform.')
+    parser.add_argument('-j', dest='numberOfJobs', type=int, default=1,
+                        help='Number of Slicer workers. A shared transform uses one batch per worker.')
     return parser
 
 
-def _parse_args(parser):
-
-    return parser.parse_args()
+def _run_slicer(polydata, transform, inverse, slicer_path, helper, outdir, partition, partitions, log):
+    command = [str(slicer_path), '--no-main-window', '--python-script', helper,
+               str(polydata), str(transform), str(int(inverse)), str(outdir),
+               str(partition), str(partitions), '--python-code', 'slicer.app.quit()']
+    with log.open('w') as stream:
+        subprocess.run(command, stdout=stream, stderr=subprocess.STDOUT, check=True)
 
 
 def main():
-
     parser = _build_arg_parser()
-    args = _parse_args(parser)
+    args = parser.parse_args()
+    inputdir, outdir, slicer_path = map(Path, (args.inputDirectory, args.outputDirectory, args.Slicer))
+    inputdir, outdir, slicer_path = inputdir.resolve(), outdir.resolve(), slicer_path.resolve()
+    if not inputdir.is_dir():
+        parser.error('Input directory does not exist: ' + str(inputdir))
+    if not slicer_path.is_file():
+        parser.error('Slicer executable does not exist: ' + str(slicer_path))
+    outdir.mkdir(parents=True, exist_ok=True)
+    inputs = wma.io.list_vtk_files(str(inputdir))
+    workers = min(effective_n_jobs(args.numberOfJobs), max(1, len(inputs)))
+    helper = str(Path(__file__).resolve().with_name('harden_transform_with_slicer.py'))
+    if args.transform_folder:
+        transform_path = Path(args.transform_folder).resolve()
+        if not transform_path.is_dir():
+            parser.error('Transform directory does not exist: ' + str(transform_path))
+        transforms = wma.io.list_transform_files(str(transform_path))
+        if len(inputs) != len(transforms):
+            parser.error('The input and transform file counts must match.')
+        tasks = [(polydata, transform, 0, 1) for polydata, transform in zip(inputs, transforms)]
+    else:
+        transform_path = Path(args.transform_file).resolve()
+        if not transform_path.is_file():
+            parser.error('Transform file does not exist: ' + str(transform_path))
+        tasks = [(inputdir, transform_path, index, workers) for index in range(workers)] if inputs else []
+    print('Harden %d files with %d Slicer worker(s).' % (len(inputs), workers), flush=True)
+    if not tasks:
+        return
+    marker = outdir/'transform_complete.log'
+    if marker.exists():
+        marker.unlink()
+    logs = Path(tempfile.mkdtemp(prefix='wma-harden-', dir=str(outdir)))
+    print('Slicer worker logs: ' + str(logs), flush=True)
+    Parallel(n_jobs=workers, prefer='threads')(
+        delayed(_run_slicer)(polydata, transform, args.inverse_transform, slicer_path, helper,
+            outdir, index, count, logs/('worker_%04d.log' % task))
+        for task, (polydata, transform, index, count) in enumerate(tasks))
+    expected = {Path(path).name for path in inputs}
+    actual = {Path(path).name for path in wma.io.list_vtk_files(str(outdir))}
+    if not expected.issubset(actual):
+        raise RuntimeError('Transformed files are missing; inspect Slicer logs: ' + str(logs))
+    shutil.rmtree(logs)
+    marker.write_text('Transforms completed for %d files.\n' % len(inputs))
+    print('Transforms completed for %d files.' % len(inputs), flush=True)
 
-    inputdir = os.path.abspath(args.inputDirectory)
-    if not os.path.isdir(args.inputDirectory):
-        print("Error: Input directory", args.inputDirectory, "does not exist.")
-        exit()
-    
-    outdir = os.path.abspath(args.outputDirectory)
-    if not os.path.exists(args.outputDirectory):
-        print("Output directory", args.outputDirectory, "does not exist, creating it.")
-        os.makedirs(outdir)
-    
-    slicer_path = os.path.abspath(args.Slicer)
-    if not os.path.exists(args.Slicer):
-        print("Error: 3D Slicer", args.Slicer, "does not exist.")
-        exit()
-    
-    if (args.transform_file is None and args.transform_folder is None) or \
-        (args.transform_file is not None and args.transform_folder is not None):
-        print("Error: Either -t or -ts needs be provided.")
-        exit()
-    elif args.transform_file is not None:
-        transform_way = 'individual'
-        transform_path = os.path.abspath(args.transform_file)
-        if not os.path.isfile(args.transform_file):
-            print("Error: Input transform file", args.transform_file, "does not exist or it is not a file.")
-            exit()
-    elif args.transform_folder is not None:
-        transform_way = 'multiple'
-        transform_path = os.path.abspath(args.transform_folder)
-        if not os.path.isdir(args.transform_folder):
-            print("Error: Input transform file folder ", args.transform_folder, "does not exist.")
-            exit()
-    
-    inverse = args.inverse_transform
-    
-    if args.numberOfJobs is not None:
-        number_of_jobs = args.numberOfJobs
-    else:
-        number_of_jobs = 1
-    
-    input_polydatas = wma.io.list_vtk_files(inputdir)
-    number_of_polydatas = len(input_polydatas)
-    
-    if transform_way == 'multiple':
-        input_transforms = wma.io.list_transform_files(transform_path)
-        number_of_transforms = len(input_transforms)
-        if number_of_polydatas != number_of_transforms:
-            print("Error: The number of input VTK/VTP files", number_of_polydatas,"should be equal to the number of transform files", number_of_transforms)
-            exit()
-    
-    print(f"<{os.path.basename(__file__)}> Starting harden transforms.")
-    print("")
-    print("=====input directory======\n", inputdir)
-    print("=====output directory=====\n", outdir)
-    print("=====3D Slicer====\n", slicer_path)
-    print("=====Way of transform====\n", transform_way)
-    print("=====Inverse? ====\n", inverse)
-    print("=====Transform file(s) path====\n", transform_path)
-    print("=====Number of jobs:====\n", number_of_jobs)
-    
-    def command_harden_transform(polydata, transform, inverse, slicer_path, outdir):
-        if inverse:
-            str_inverse = 1
-        else:
-            str_inverse = 0
-    
-        print(f"<{os.path.basename(__file__)}> Transforming:", polydata)
-        cmd = slicer_path + " --no-main-window --python-script $(which harden_transform_with_slicer.py) " + \
-              polydata + " " + transform + " " + str(str_inverse) + " " + outdir + " --python-code 'slicer.app.quit()' " + \
-              ' >> ' + os.path.join(outdir, 'log.txt 2>&1')
-    
-        os.system(cmd)
-    
-    if transform_way == 'multiple':
-        for polydata, transform in zip(input_polydatas, input_transforms):
-            print("======", transform, ' <TO> ', polydata)
-        print("\n")
-        Parallel(n_jobs=number_of_jobs, verbose=1)(
-            delayed(command_harden_transform)(polydata, transform, inverse, slicer_path, outdir)
-            for polydata, transform in zip(input_polydatas, input_transforms))
-    else:
-        print("======", transform_path, "will be applied to all inputs.\n")
-    
-        command_harden_transform(inputdir, transform_path, inverse, slicer_path, outdir)
-    
-        # Parallel(n_jobs=number_of_jobs, verbose=1)(
-        #     delayed(command_harden_transform)(polydata, transform_path, inverse, slicer_path, outdir)
-        #     for polydata in input_polydatas)
-    
-    output_polydatas = wma.io.list_vtk_files(outdir)
-    number_of_results = len(output_polydatas)
-    print(f"<{os.path.basename(__file__)}> Transform were conducted for", number_of_results, "subjects.")
-    
-    if number_of_results != number_of_polydatas:
-        print("Error: The numbers of inputs and outputs are different. Check log file for errors.")
-    else:
-        os.remove(os.path.join(outdir, 'log.txt'))
 
 if __name__ == '__main__':
     main()

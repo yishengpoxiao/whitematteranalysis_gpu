@@ -169,6 +169,7 @@ def write_polydata(polydata, filename):
     elif (extension == '.vtp'):
         writer = vtk.vtkXMLPolyDataWriter()
         writer.SetDataModeToBinary()
+        writer.SetCompressionLevel(1)
     else:
         print('Cannot recognize model file format')
         return None
@@ -178,7 +179,8 @@ def write_polydata(polydata, filename):
         writer.SetInputData(polydata)
     else:
         writer.SetInput(polydata)
-    writer.Update()
+    if not writer.Write():
+        raise IOError('Could not write polydata: ' + str(filename))
 
     del writer
 

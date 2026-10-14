@@ -63,6 +63,8 @@ def _build_arg_parser():
     parser.add_argument(
         'outdir',
         help='')
+    parser.add_argument('partition_index', type=int, nargs='?', default=0)
+    parser.add_argument('partition_count', type=int, nargs='?', default=1)
 
     return parser
 
@@ -88,6 +90,8 @@ def main():
     else:
         raise ValueError('Input is not a file or directory: ' + args.polydata)
 
+    input_polydatas = input_polydatas[args.partition_index::args.partition_count]
+
     check_load, transform_node = slicer.util.loadTransform(str(args.transform), 1)
     if not check_load:
         raise RuntimeError('Could not load transform file: ' + args.transform)
@@ -106,4 +110,10 @@ def main():
         slicer.mrmlScene.EndState(slicer.mrmlScene.BatchProcessState)
 
 if __name__ == '__main__':
-    main()
+    try:
+        main()
+    except Exception:
+        import sys
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)

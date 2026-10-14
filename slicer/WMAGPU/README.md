@@ -377,6 +377,11 @@ GPU bilateral distances also share one launch, and CPU reference coordinates use
 a compiled-kernel layout. See the [bilateral/layout record](../../doc/gpu/progress-2026-10-15-bilateral-layout.md)
 for exact comparisons and stage timings.
 
+Bundled VTP writing uses lossless zlib level 1 while preserving decoded geometry,
+array types and metadata. See the [file-stage record](../../doc/gpu/progress-2026-10-15-file-stages.md)
+for round-trip checks and compression measurements. The CLI's independent file
+workers are separate from Slicer's in-memory workflow.
+
 
 Slicer 5.2.2 on Linux was used to verify Extension Manager installation, the five current
 modules, node selection without SlicerDMRI, CPU/GPU labeling agreement, affine

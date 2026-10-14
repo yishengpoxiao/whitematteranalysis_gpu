@@ -5,6 +5,10 @@ import os
 import argparse
 import vtk
 import glob
+import numpy
+from vtk.util.numpy_support import numpy_to_vtk
+
+from joblib import Parallel, delayed
 
 import whitematteranalysis as wma
 
@@ -24,12 +28,39 @@ def _build_arg_parser():
         'outputDirectory',
         help='The output directory should be a new empty directory. It will be created if needed.')
 
+    parser.add_argument('-j', '--jobs', dest='number_of_jobs', type=int, default=1,
+                        help='Number of independent anatomical-tract workers (default: 1).')
+
     return parser
 
 
 def _parse_args(parser):
 
     return parser.parse_args()
+
+
+def output_appended_tract(cluster_vtp_list, outputfile):
+    appender = vtk.vtkAppendPolyData()
+    for c_idx in range(len(cluster_vtp_list)):
+        cluster_vtp = cluster_vtp_list[c_idx]
+        pd_cluster = wma.io.read_polydata(cluster_vtp)
+
+        vtk_array = numpy_to_vtk(numpy.full(pd_cluster.GetNumberOfPoints(), c_idx, dtype=numpy.int32), deep=True)
+        vtk_array.SetName('cluster_idx')
+
+        pd_cluster.GetPointData().AddArray(vtk_array)
+
+        #print '<wm_append_clusters_to_anatomical_tracts>', cluster_vtp, ', number of fibers', pd_cluster.GetNumberOfLines()
+
+        if (vtk.vtkVersion().GetVTKMajorVersion() >= 6.0):
+            appender.AddInputData(pd_cluster)
+        else:
+            appender.AddInput(pd_cluster)
+
+    appender.Update()
+    pd_appended_cluster = appender.GetOutput()
+
+    wma.io.write_polydata(pd_appended_cluster, outputfile)
 
 
 def main():
@@ -79,30 +110,11 @@ def main():
         print(f"<{os.path.basename(__file__)}> Output directory", args.outputDirectory, "does not exist, creating it.")
         os.makedirs(outdir)
 
-    def output_appended_tract(cluster_vtp_list, outputfile):
-        appender = vtk.vtkAppendPolyData()
-        for c_idx in range(len(cluster_vtp_list)):
-            cluster_vtp = cluster_vtp_list[c_idx]
-            pd_cluster = wma.io.read_polydata(cluster_vtp)
+    marker = os.path.join(outdir, 'anatomical_tracts_complete.log')
+    if os.path.exists(marker):
+        os.remove(marker)
 
-            vtk_array = vtk.vtkIntArray()
-            vtk_array.SetName('cluster_idx')
-            for p_idx in range(0, pd_cluster.GetNumberOfPoints()):
-                vtk_array.InsertNextTuple1(int(c_idx))
-
-            pd_cluster.GetPointData().AddArray(vtk_array)
-
-            #print '<wm_append_clusters_to_anatomical_tracts>', cluster_vtp, ', number of fibers', pd_cluster.GetNumberOfLines()
-
-            if (vtk.vtkVersion().GetVTKMajorVersion() >= 6.0):
-                appender.AddInputData(pd_cluster)
-            else:
-                appender.AddInput(pd_cluster)
-
-        appender.Update()
-        pd_appended_cluster = appender.GetOutput()
-
-        wma.io.write_polydata(pd_appended_cluster, outputfile)
+    tasks = []
 
     hemispheric_tracts = ["T_AF", "T_CB", "T_CPC", "T_MdLF", "T_PLIC", "T_SLF-I", "T_SLF-II", "T_SLF-III", "T_EC", "T_EmC", "T_ICP", "T_ILF", "T_IOFF", "T_UF",
                          "T_Intra-CBLM-I&P", "T_Intra-CBLM-PaT", "T_CR-F", "T_CR-P", "T_CST", "T_SF", "T_SO", "T_SP", "T_TF", "T_TO", "T_TP",
@@ -146,8 +158,8 @@ def main():
         output_tract_left = os.path.join(outdir, tract + '_left.vtp')
         output_tract_right = os.path.join(outdir, tract + '_right.vtp')
 
-        output_appended_tract(cluster_vtp_list_left, output_tract_left)
-        output_appended_tract(cluster_vtp_list_right, output_tract_right)
+        tasks.append((cluster_vtp_list_left, output_tract_left))
+        tasks.append((cluster_vtp_list_right, output_tract_right))
 
     print(f"<{os.path.basename(__file__)}> commissural tracts: ")
     for tract in commissural_tracts:
@@ -176,7 +188,14 @@ def main():
 
         output_tract_comm = os.path.join(outdir, tract + '.vtp')
 
-        output_appended_tract(cluster_vtp_list_comm, output_tract_comm)
+        tasks.append((cluster_vtp_list_comm, output_tract_comm))
+
+    Parallel(n_jobs=args.number_of_jobs)(
+        delayed(output_appended_tract)(members, output) for members, output in tasks)
+    if any(not os.path.isfile(output) for _, output in tasks):
+        raise RuntimeError('Anatomical tract outputs are incomplete.')
+    with open(marker, 'w') as stream:
+        stream.write('Anatomical tract appending completed for %d files.\n' % len(tasks))
 
     def list_cluster_files(input_dir):
         # Find input files
