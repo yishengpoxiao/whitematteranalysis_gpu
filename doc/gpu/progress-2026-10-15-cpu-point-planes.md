@@ -136,3 +136,16 @@ All 2,474 output VTP files are byte-identical to the preceding full CPU case:
 800 transformed clusters (130,737) and 74 anatomical tracts (93,766). All 11
 saved transform files have exactly identical transform types, parameters and
 fixed parameters. Completion markers and output catalogues are checked.
+
+## Installed Slicer verification
+
+The universal installer is rebuilt from source revision `ba41935` and exercised
+in an isolated native Slicer 5.2.2 process, including the installer failure and
+retry path, dependency checks and optional CUDA probe. A fresh Slicer process
+imports the installed vendor sources and passes all 25 targeted CPU tests with
+NumPy 1.23.4, SciPy 1.9.2 and VTK 9.1.0; no tests are skipped in this selection.
+All five extension pages load, CPU atlas labeling and registration work, and
+the four core atlas/groupwise tests pass. All 100 packaged library/module source
+files match both the repository and the actual installed files byte-for-byte.
+The tested date-free `WMAGPU-Installer.zip` is the delivered archive. GPU kernels
+are unchanged by this CPU reduction patch.
