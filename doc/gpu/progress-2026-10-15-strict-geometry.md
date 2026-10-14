@@ -147,3 +147,16 @@ laterality outputs, hemisphere boundaries/defaults/subsets, reader ownership,
 schema/file changes, callback cleanup, concurrent readers, atlas cache
 invalidation, parallel outlier masks, effective-row OOM retries/termination,
 registration, geometry preparation and CLI file-stage metadata/outputs.
+
+The universal installer was rebuilt from source `6df279d` and installed through
+its real dialog in a fresh Slicer 5.2.2 Linux profile. All 100 packaged source
+files are byte-identical between the repository, payload and installed extension.
+All 55 core tests pass against the installed modules in Slicer's Python 3.9,
+NumPy 1.23.4, SciPy 1.9.2, PyTorch 2.4.1 + CUDA 12.1 and VTK 9.1.0, including
+two selected CUDA devices. The eight additional CLI file-stage tests account
+for the difference from the 63-test source suite. Windows/macOS runtime
+validation was not available.
+A separate fresh Slicer process discovers and opens all five installed module
+pages, verifies CPU/GPU labeling and registration, and passes all four installed
+core functional tests. The overall optimization goal remains open; these
+measurements do not establish that CPU/GPU optimization opportunities are exhausted.
