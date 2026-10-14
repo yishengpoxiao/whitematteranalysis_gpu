@@ -1,4 +1,4 @@
-"""Optional float64 distance/threshold/reduction fusion for short fibers."""
+"""Optional float64 distance kernels for short fibers and embedding vectors."""
 from . import registration_kernel
 
 triton = registration_kernel.triton
@@ -50,6 +50,42 @@ if triton is not None:
             a, b = a * a, b * b
         result = tl.minimum(a, b, propagate_nan=tl.PropagateNan.ALL)
         tl.store(Output + pair, result, pair < COUNT)
+
+    @triton.jit
+    def _centroid_distances(Q, C, Output, NC, COUNT,
+                            D: tl.constexpr, WIDTH: tl.constexpr,
+                            STEPS: tl.constexpr, BLOCK: tl.constexpr):
+        pair = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
+        dimension = tl.arange(0, WIDTH)[None, :]
+        mask = (pair[:, None] < COUNT) & (dimension < D)
+        query = tl.load(Q + (pair[:, None] // NC) * D + dimension, mask, other=0.)
+        centroid = tl.load(C + (pair[:, None] % NC) * D + dimension, mask, other=0.)
+        diff = query - centroid
+        values = diff * diff
+        # Match cdist's descending warp-shuffle reduction, including sqrt rounding.
+        for step in tl.static_range(STEPS):
+            a, b = tl.split(tl.trans(tl.reshape(values,
+                (BLOCK, 2, WIDTH // (1 << (step + 1)))), 0, 2, 1))
+            values = a + b
+        result = libdevice.sqrt_rn(tl.reshape(values, (BLOCK,)))
+        tl.store(Output + pair, result, pair < COUNT)
+
+
+def centroid_distances(queries, centroids):
+    """Direct Euclidean distances for contiguous float64 CUDA vectors, 1<=D<=32."""
+    import torch
+
+    output = torch.empty((len(queries), len(centroids)), dtype=queries.dtype, device=queries.device)
+    dimensions = queries.shape[1]
+    block = 128 if dimensions <= 16 else 32
+    if output.numel():
+        with torch.cuda.device(queries.device):
+            _centroid_distances[(triton.cdiv(output.numel(), block),)](
+                queries, centroids, output, len(centroids), output.numel(),
+                D=dimensions, WIDTH=triton.next_power_of_2(dimensions),
+                STEPS=(dimensions - 1).bit_length(), BLOCK=block,
+                num_warps=1, enable_fp_fusion=False)
+    return output
 
 
 def fiber_distances(queries, fixed, threshold, method):

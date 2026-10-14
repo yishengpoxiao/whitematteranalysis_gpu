@@ -68,6 +68,10 @@ Geometry preparation avoids full tractogram copies, and CPU distance tiles use
 SciPy's compiled kernel where beneficial. See the
 [geometry and CPU measurements](doc/gpu/progress-2026-10-15-geometry-cpu.md).
 
+An optional short-vector CUDA kernel also accelerates nearest-centroid distances
+without changing float64 results. See the
+[centroid optimization measurements](doc/gpu/progress-2026-10-15-centroids.md).
+
 ## 3D Slicer extension
 
 Use the [universal installer](slicer/WMAGPU/dist/WMAGPU-Installer.zip).

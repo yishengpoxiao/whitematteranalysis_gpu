@@ -112,6 +112,20 @@ def _prepare_atlas(atlas):
         numpy.sqrt(numpy.divide(1., atlas.row_sum_1)), atlas.centroids))
 
 
+def _nearest_centroids(embed, centroids):
+    from . import distance_kernel
+
+    if (distance_kernel.triton is not None and embed.is_cuda
+            and embed.dtype == centroids.dtype == torch.float64
+            and centroids.ndim == 2 and embed.shape[1] == centroids.shape[1]
+            and 1 <= embed.shape[1] <= 32
+            and embed.is_contiguous() and centroids.is_contiguous()):
+        distances = distance_kernel.centroid_distances(embed, centroids)
+    else:
+        distances = torch.cdist(embed, centroids, compute_mode='donot_use_mm_for_euclid_dist')
+    return distances.min(1)
+
+
 def _atlas_embedding_block(B, atlas, prepared):
     """Normalize, embed and label on CUDA; copy only compact results to host."""
     dev = get_device()
@@ -126,8 +140,7 @@ def _atlas_embedding_block(B, atlas, prepared):
     del Bg
     # Direct differences avoid cancellation from the squared-norm GEMM formula.
     # min chooses the first centroid on a tie, matching scipy.cluster.vq.vq.
-    distances, labels = torch.cdist(embed, centroids,
-        compute_mode='donot_use_mm_for_euclid_dist').min(1)
+    distances, labels = _nearest_centroids(embed, centroids)
     # One device-to-host transfer replaces three transfers and the row-sum
     # upload. Keep the warning on the CPU, after results are already available.
     host = torch.cat((embed, row_sum_2[:, None], b_col_sums[:, None],

@@ -83,6 +83,7 @@ class LoadingTests(unittest.TestCase):
     def test_release_keeps_live_tensors_and_clears_inactive_cache(self):
         import torch
         device = 0
+        baseline = release_unused_memory(device)
         live = torch.ones(1024, device='cuda:0')
         temporary = torch.ones(8 << 20, device='cuda:0')
         del temporary
@@ -94,8 +95,9 @@ class LoadingTests(unittest.TestCase):
         self.assertGreater(report['allocated'], 0)
         del live
         report = release_unused_memory(device)
-        self.assertEqual(report['allocated'], 0)
-        self.assertEqual(report['reserved'], 0)
+        # Prior GEMMs may retain a cuBLAS workspace owned by PyTorch.
+        self.assertEqual(report['allocated'], baseline['allocated'])
+        self.assertEqual(report['reserved'], baseline['reserved'])
 
 
 if __name__ == '__main__':

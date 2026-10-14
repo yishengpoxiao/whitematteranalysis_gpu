@@ -369,6 +369,10 @@ Geometry preparation also avoids full tractogram copies, and large CPU distance
 tiles use SciPy's compiled kernel. See the [geometry/CPU record](../../doc/gpu/progress-2026-10-15-geometry-cpu.md)
 for numerical validation and timings.
 
+With Triton, short-vector centroid distances also use a dedicated float64 CUDA
+kernel. The direct PyTorch fallback remains available. See the
+[centroid optimization record](../../doc/gpu/progress-2026-10-15-centroids.md).
+
 
 Slicer 5.2.2 on Linux was used to verify Extension Manager installation, the five current
 modules, node selection without SlicerDMRI, CPU/GPU labeling agreement, affine
