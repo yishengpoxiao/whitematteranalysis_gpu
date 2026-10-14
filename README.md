@@ -103,6 +103,12 @@ SciPy's compiled calculation. See the [registration workspace and Mean distance
 measurements](doc/gpu/progress-2026-10-15-registration-workspace.md) for exact
 optimizer/output checks and the measured limits of these gains.
 
+StrictSimilarity has an optional fused float64 CUDA kernel, and CPU/GPU laterality
+reduces row tiles instead of retaining whole-brain similarity matrices. Atlas
+outlier references also reuse geometry-only XML readers. See the
+[StrictSimilarity, laterality and reference I/O measurements](doc/gpu/progress-2026-10-15-strict-geometry.md)
+for scope, exact-value checks, memory use and full-stage timing limits.
+
 ## 3D Slicer extension
 
 Use the [universal installer](slicer/WMAGPU/dist/WMAGPU-Installer.zip).

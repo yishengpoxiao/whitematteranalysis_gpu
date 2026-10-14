@@ -128,6 +128,8 @@ def _inner_loop_objective(F, M, sigmasq, dev, chunk_rows=None, workspace=None):
     """Entropy for prepared (N, P, 3) tensors; retain the CPU reduction."""
     n_fixed = F.shape[0]
     n_moving = M.shape[0]
+    if chunk_rows is not None and chunk_rows < 1:
+        raise ValueError('chunk_rows must be positive')
 
     if chunk_rows is None:
         chunk_rows = workspace.chunk_rows if workspace is not None else _choose_chunk_rows(F, n_moving, dev)
@@ -141,10 +143,10 @@ def _inner_loop_objective(F, M, sigmasq, dev, chunk_rows=None, workspace=None):
             q = M[s:e].to(dev)
             prob = _pairwise_probability(F, q, sigmasq)
         except torch.cuda.OutOfMemoryError:
-            if chunk_rows == 1:
+            if e - s == 1:
                 raise
             torch.cuda.empty_cache()
-            chunk_rows = max(1, chunk_rows // 2)
+            chunk_rows = max(1, (e - s) // 2)
             if workspace is not None:
                 workspace.chunk_rows = chunk_rows
             continue

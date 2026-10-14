@@ -183,10 +183,15 @@ class RegistrationTests(unittest.TestCase):
             return original(fixed, moving, sigmasq)
 
         expected = gpu._inner_loop_objective(fixed, moving, 100., 'cuda', 2)
-        with patch.object(gpu, '_pairwise_probability', side_effect=constrained):
-            actual = gpu._inner_loop_objective(fixed, moving, 100., 'cuda', 5)
-        self.assertEqual(actual, expected)
-        self.assertEqual(sizes, [5, 2, 2, 1])
+        for rows in (5, 8192):
+            sizes.clear()
+            with patch.object(gpu, '_pairwise_probability', side_effect=constrained):
+                actual = gpu._inner_loop_objective(fixed, moving, 100., 'cuda', rows)
+            self.assertEqual(actual, expected)
+            self.assertEqual(sizes, [5, 2, 2, 1])
+        for rows in (0, -1):
+            with self.assertRaisesRegex(ValueError, 'chunk_rows must be positive'):
+                gpu._inner_loop_objective(fixed, moving, 100., 'cuda', rows)
         with patch.object(gpu, '_pairwise_probability', side_effect=torch.cuda.OutOfMemoryError):
             with self.assertRaises(torch.cuda.OutOfMemoryError):
                 gpu._inner_loop_objective(fixed, moving, 100., 'cuda', 1)

@@ -24,6 +24,7 @@ import os
 import pickle
 import glob
 import time
+from threading import local
 import numpy
 import vtk
 from joblib import Parallel, delayed
@@ -32,17 +33,31 @@ from . import render
 from . import filter
 
 VERBOSE = 0
+_geometry_readers = local()
 
 
-def read_polydata(filename, progress_callback=None):
-    """Read whole-brain tractography as vtkPolyData format."""
+def read_polydata(filename, progress_callback=None, geometry_only=False):
+    """Read tractography; optionally discard attributes for reference geometry.
+
+    XML geometry reads reuse one reader per thread and skip known point/cell
+    arrays. Returned geometry is independent of subsequent reads. Legacy VTK
+    attributes are discarded after reading; default reads retain attributes.
+    """
 
     if VERBOSE:
         print("Reading in data from", filename, "...")
 
     basename, extension = os.path.splitext(filename)
 
-    if   (extension == '.vtk'):
+    shared_reader = geometry_only and extension == '.vtp'
+    first_read = False
+    if shared_reader:
+        reader = getattr(_geometry_readers, 'xml', None)
+        if reader is None:
+            reader = vtk.vtkXMLPolyDataReader()
+            _geometry_readers.xml = reader
+            first_read = True
+    elif (extension == '.vtk'):
         reader = vtk.vtkPolyDataReader()
     elif (extension == '.vtp'):
         reader = vtk.vtkXMLPolyDataReader()
@@ -51,10 +66,30 @@ def read_polydata(filename, progress_callback=None):
         return None
 
     reader.SetFileName(filename)
+    observer = None
     if progress_callback is not None:
-        reader.AddObserver(vtk.vtkCommand.ProgressEvent, lambda caller, event: progress_callback(caller.GetProgress()))
-    reader.Update()
-    outpd = reader.GetOutput()
+        observer = reader.AddObserver(vtk.vtkCommand.ProgressEvent, lambda caller, event: progress_callback(caller.GetProgress()))
+    try:
+        if shared_reader:
+            if first_read:
+                reader.UpdateInformation()
+            reader.GetPointDataArraySelection().DisableAllArrays()
+            reader.GetCellDataArraySelection().DisableAllArrays()
+            reader.Modified()  # Reread even when an existing filename was overwritten.
+        reader.Update()
+        outpd = reader.GetOutput()
+        if geometry_only:
+            outpd.GetPointData().Initialize()
+            outpd.GetCellData().Initialize()
+            outpd.GetFieldData().Initialize()
+            if shared_reader:
+                result = vtk.vtkPolyData()
+                result.DeepCopy(outpd)
+                outpd.ReleaseData()
+                outpd = result
+    finally:
+        if observer is not None:
+            reader.RemoveObserver(observer)
     del reader
     if VERBOSE:
         print("Done reading in data from", filename)

@@ -116,6 +116,7 @@ class FiberArray:
     def __init__(self):
         # parameters
         self.points_per_fiber = 10
+        self.hemisphere_percent_threshold = 0.95
         self.verbose = 0
 
         # fiber data
@@ -219,6 +220,7 @@ class FiberArray:
 
         # parameters
         fibers.points_per_fiber = self.points_per_fiber
+        fibers.hemisphere_percent_threshold = self.hemisphere_percent_threshold
         fibers.verbose = self.verbose
 
         # fiber data
@@ -461,7 +463,7 @@ class FiberArray:
         # Figure out hemisphere of each line
         self.fiber_hemisphere = numpy.zeros(self.number_of_fibers)
         # percentage in left hemisphere
-        test = sum(self.fiber_array_r.T < 0) / float(self.points_per_fiber)
+        test = numpy.count_nonzero(self.fiber_array_r < 0, axis=1) / float(self.points_per_fiber)
         thresh = self.hemisphere_percent_threshold
         self.fiber_hemisphere[numpy.nonzero(test > thresh)] = -1
         self.fiber_hemisphere[numpy.nonzero(test < 1 - thresh)] = 1

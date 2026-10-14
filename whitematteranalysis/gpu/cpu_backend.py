@@ -141,11 +141,12 @@ def _distance_block(q, fixed, threshold, distance_method, bilateral, sigmasq):
 
 def _distance_matrix(Xn, Xm, threshold, distance_method='Hausdorff',
                      bilateral=False, sigmasq=6400, gpu_float32=None,
-                     tile_rows=None, number_of_jobs=None, executor=None):
+                     tile_rows=None, number_of_jobs=None, executor=None, row_sum=False):
     """(n, P, 3) queries x (m, P, 3) fixed -> (n, m) float64 distance
     matrix (row i = query fiber i vs all fixed fibers), computed on
     tiled blocks over threads. Results are independent of threading.
     number_of_jobs overrides the thread count without changing global settings.
+    row_sum=True returns per-query sums without allocating the full result.
     """
 
     dtype_bytes = 8
@@ -157,12 +158,13 @@ def _distance_matrix(Xn, Xm, threshold, distance_method='Hausdorff',
         Xm = numpy.ascontiguousarray(Xm.transpose(1, 0, 2)).transpose(1, 0, 2)
 
     def compute(s, e):
-        return _distance_block(Xn[s:e], Xm, threshold, distance_method, bilateral, sigmasq)
+        values = _distance_block(Xn[s:e], Xm, threshold, distance_method, bilateral, sigmasq)
+        return values.sum(1) if row_sum else values
 
     if n <= tr:
         return compute(0, n)
 
-    out = numpy.empty((n, Xm.shape[0]), dtype=numpy.float64)
+    out = numpy.empty(n if row_sum else (n, Xm.shape[0]), dtype=numpy.float64)
     workers = min(threads, (n + tr - 1) // tr)
 
     def fill(worker):
@@ -269,11 +271,12 @@ def pairwise_distance_matrix_from_fiber_array(fiber_array, threshold,
 
 
 def total_similarity_matrix_strict(X_queries, X_fixed, reflect_mask, threshold,
-                                   sigmasq, gpu_float32=None, tile_rows=None):
+                                   sigmasq, gpu_float32=None, tile_rows=None, row_sum=False):
     """StrictSimilarity matrix for laterality (see gpu.distance for the
     GPU version): row i is the StrictSimilarity of query fiber i
     (x-reflected first when reflect_mask[i] is True) to every fiber of
-    X_fixed."""
+    X_fixed. row_sum=True returns only per-query totals, preserving the
+    original NumPy summation order while bounding the result memory."""
 
     q_all = numpy.asarray(X_queries, dtype=numpy.float64)
     reflect_mask = numpy.asarray(reflect_mask, dtype=bool)
@@ -282,7 +285,7 @@ def total_similarity_matrix_strict(X_queries, X_fixed, reflect_mask, threshold,
         q_all[reflect_mask, :, 0] = -q_all[reflect_mask, :, 0]
     return _distance_matrix(q_all, numpy.asarray(X_fixed, dtype=numpy.float64),
                             threshold, 'StrictSimilarity', False, sigmasq,
-                            gpu_float32, tile_rows)
+                            gpu_float32, tile_rows, row_sum=row_sum)
 
 
 def transform_fiber_array(in_array, transform, mode=(1, 1, 1, 1)):

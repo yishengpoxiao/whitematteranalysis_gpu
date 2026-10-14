@@ -9,6 +9,21 @@ from whitematteranalysis.gpu import distance, distance_kernel
 
 @unittest.skipUnless(wma.gpu.available(), 'CUDA is required')
 class DistanceKernelTests(unittest.TestCase):
+    def test_strict_probability_scales(self):
+        import torch
+        rng = np.random.RandomState(48)
+        for points in (1, 3, 15, 20, 32, 50):
+            fixed = torch.tensor(rng.normal(size=(37, points, 3)), dtype=torch.float64, device='cuda')
+            moving = fixed[:5].clone()
+            for sigma in (1e-5, 100., 1e6, 0., -1., float('inf'), float('nan')):
+                for bilateral in (False, True):
+                    actual = distance._fiber_block_distances(moving, fixed, .1,
+                        'StrictSimilarity', sigma, bilateral)
+                    with patch.object(distance_kernel, 'triton', None):
+                        expected = distance._fiber_block_distances(moving, fixed, .1,
+                            'StrictSimilarity', sigma, bilateral)
+                    torch.testing.assert_close(actual, expected, rtol=0., atol=0., equal_nan=True)
+
     def test_eager_equivalence(self):
         import torch
         rng = np.random.RandomState(42)

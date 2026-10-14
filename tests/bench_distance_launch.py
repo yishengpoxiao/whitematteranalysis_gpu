@@ -1,6 +1,7 @@
 """Compare CUDA distance launch settings and optional real-subject labeling."""
 import argparse
 import json
+import inspect
 from pathlib import Path
 import statistics
 import time
@@ -18,14 +19,20 @@ from test_output_pipeline import baseline_module
 def compare(functions, repeats):
     outputs = [function() for function in functions]
     samples = [[], []]
+    peaks = [0, 0]
+    device = wma.gpu.get_device()
     for repeat in range(repeats):
         for index in (range(2) if repeat % 2 == 0 else reversed(range(2))):
-            torch.cuda.synchronize()
+            torch.cuda.synchronize(device)
+            torch.cuda.reset_peak_memory_stats(device)
+            allocated = torch.cuda.memory_allocated(device)
             start = time.perf_counter()
             outputs[index] = functions[index]()
-            torch.cuda.synchronize()
+            torch.cuda.synchronize(device)
             samples[index].append(time.perf_counter()-start)
-    return outputs, [dict(seconds=s, median_seconds=statistics.median(s)) for s in samples]
+            peaks[index] = max(peaks[index], torch.cuda.max_memory_allocated(device) - allocated)
+    return outputs, [dict(seconds=s, median_seconds=statistics.median(s),
+                          peak_extra_tensor_bytes=peaks[i]) for i, s in enumerate(samples)]
 
 
 def main():
@@ -42,18 +49,22 @@ def main():
                                'gpu/distance.py', args.baseline)
     original.distance_kernel = baseline_module('whitematteranalysis.gpu._launchkernelbaseline',
                                                'gpu/distance_kernel.py', args.baseline)
+    bilateral_supported = 'bilateral' in inspect.signature(original._fiber_block_distances).parameters
     report = dict(baseline=args.baseline, bilateral=args.bilateral, distance={})
     torch.manual_seed(42)
     for points in (10, 15, 20):
         fixed = torch.randn((2500, points, 3), dtype=torch.float64, device=wma.gpu.get_device())*40
         queries = torch.randn((2048, points, 3), dtype=torch.float64, device=wma.gpu.get_device())*40
-        for method in ('Mean', 'MeanSquared', 'Hausdorff'):
+        for method in ('Mean', 'MeanSquared', 'Hausdorff', 'StrictSimilarity'):
             def previous():
+                if bilateral_supported:
+                    return original._fiber_block_distances(queries, fixed, 2., method, 6400., args.bilateral)
                 result = original._fiber_block_distances(queries, fixed, 2., method, 6400.)
                 if args.bilateral:
                     reflected = queries.clone()
                     reflected[:, :, 0] *= -1
-                    result = torch.minimum(result, original._fiber_block_distances(
+                    combine = torch.maximum if method == 'StrictSimilarity' else torch.minimum
+                    result = combine(result, original._fiber_block_distances(
                         reflected, fixed, 2., method, 6400.))
                 return result
             outputs, timings = compare([

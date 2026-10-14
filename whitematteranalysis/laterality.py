@@ -24,7 +24,6 @@ import os
 
 import numpy
 
-import vtk
 try:
     from joblib import Parallel, delayed
     USE_PARALLEL = 1
@@ -42,9 +41,9 @@ def compute_laterality_index(left, right, idx=None):
 
     laterality_index = numpy.zeros(len(left))
 
-    if idx == None:
+    if idx is None:
         # if L=R=0, output 0. (avoid divide by 0, skip masked out data)
-        idx = numpy.nonzero(left)[0] & numpy.nonzero(right)[0]
+        idx = numpy.flatnonzero(left + right)
 
     # otherwise use input idx to select relevant data, to avoid doing
     # the above nonzero every time in a loop
@@ -171,48 +170,26 @@ class WhiteMatterLaterality:
 
         # run the computation, either on GPU, on the vectorized CPU
         # backend, in parallel, or not
-        if gpu.use_gpu():
+        use_gpu = gpu.use_gpu()
+        if use_gpu or gpu.config.cpu_fast_enabled():
             if self.verbose:
-                print(f"<{os.path.basename(__file__)}> Computing laterality on GPU.")
-
-            # compare all (hemisphere) fibers to each hemisphere array at
-            # once; fibers are reflected to the target hemisphere first,
-            # exactly like similarity.total_similarity_for_laterality
+                print(f"<{os.path.basename(__file__)}> Computing laterality on " +
+                      ('GPU.' if use_gpu else 'the vectorized CPU backend.'))
+            backend = gpu.distance if use_gpu else gpu.cpu_backend
             X_all = gpu.fiber_tensors.fiber_array_to_numpy(self.fibers)
             X_right = gpu.fiber_tensors.fiber_array_to_numpy(fiber_array_right)
             X_left = gpu.fiber_tensors.fiber_array_to_numpy(fiber_array_left)
             hem_rows = self.fibers.index_hem
             X_hem = X_all[hem_rows]
 
-            sim_right = gpu.distance.total_similarity_matrix_strict(
+            # Reduce each row tile immediately, preserving NumPy's summation
+            # order without retaining two whole-brain similarity matrices.
+            right_hem_total[hem_rows] = backend.total_similarity_matrix_strict(
                 X_hem, X_right, self.fibers.is_left_hem[hem_rows],
-                self.threshold, sigmasq)
-            sim_left = gpu.distance.total_similarity_matrix_strict(
+                self.threshold, sigmasq, row_sum=True)
+            left_hem_total[hem_rows] = backend.total_similarity_matrix_strict(
                 X_hem, X_left, self.fibers.is_right_hem[hem_rows],
-                self.threshold, sigmasq)
-
-            right_hem_total[hem_rows] = sim_right.sum(1)
-            left_hem_total[hem_rows] = sim_left.sum(1)
-
-        elif gpu.config.cpu_fast_enabled():
-            if self.verbose:
-                print(f"<{os.path.basename(__file__)}> Computing laterality with the vectorized CPU backend.")
-
-            X_all = gpu.fiber_tensors.fiber_array_to_numpy(self.fibers)
-            X_right = gpu.fiber_tensors.fiber_array_to_numpy(fiber_array_right)
-            X_left = gpu.fiber_tensors.fiber_array_to_numpy(fiber_array_left)
-            hem_rows = self.fibers.index_hem
-            X_hem = X_all[hem_rows]
-
-            sim_right = gpu.cpu_backend.total_similarity_matrix_strict(
-                X_hem, X_right, self.fibers.is_left_hem[hem_rows],
-                self.threshold, sigmasq)
-            sim_left = gpu.cpu_backend.total_similarity_matrix_strict(
-                X_hem, X_left, self.fibers.is_right_hem[hem_rows],
-                self.threshold, sigmasq)
-
-            right_hem_total[hem_rows] = sim_right.sum(1)
-            left_hem_total[hem_rows] = sim_left.sum(1)
+                self.threshold, sigmasq, row_sum=True)
 
         elif (USE_PARALLEL & (self.parallel_jobs > 1)):
             if self.verbose:
@@ -249,9 +226,6 @@ class WhiteMatterLaterality:
             #left_hem_distance = ret[1]
 
         else:
-            right_hem_distance = numpy.zeros([nf, len(self.fibers.index_right_hem)])
-            left_hem_distance = numpy.zeros([nf, len(self.fibers.index_left_hem)])
-
             # compare to right hemisphere (reflect fiber first if in left hem)
             for lidx in self.fibers.index_hem:
                 ret = similarity.total_similarity_for_laterality(
@@ -282,10 +256,10 @@ class WhiteMatterLaterality:
 
         # output the LI as cell data in the polydata
         # for visualization and/or further analyses
-        cell_data = vtk.vtkFloatArray()
-        cell_data.SetName('Laterality')
-        for lidx in range(0, self.fibers.number_of_fibers):
-            cell_data.InsertNextTuple1(laterality_index[lidx])
+        if nf:
+            from vtk.util.numpy_support import numpy_to_vtk
+            cell_data = numpy_to_vtk(numpy.ascontiguousarray(laterality_index, dtype=numpy.float32), deep=True)
+            cell_data.SetName('Laterality')
             input_vtk_polydata.GetCellData().SetScalars(cell_data)
 
         # output everything

@@ -109,8 +109,9 @@ def _fiber_block_distances(q, f, threshold, distance_method, sigmasq, bilateral=
     if (distance_kernel.triton is not None and q.is_cuda and q.dtype == f.dtype == torch.float64
             and q.is_contiguous() and f.is_contiguous()
             and points_per_fiber <= 32
-            and distance_method in ('Mean', 'MeanSquared', 'Hausdorff')):
-        return distance_kernel.fiber_distances(q, f, threshold, distance_method, bilateral)
+            and distance_method in SUPPORTED_DISTANCE_METHODS
+            and (distance_method != 'StrictSimilarity' or sigmasq > 0)):
+        return distance_kernel.fiber_distances(q, f, threshold, distance_method, bilateral, sigmasq)
     fwd = _reduce_points(_pointwise_squared_distance(q, f),
                          distance_method, threshold, sigmasq, points_per_fiber)
     rev = _reduce_points(_pointwise_squared_distance(q.flip(1), f),
@@ -183,8 +184,10 @@ def _distance_matrix(Xn, Xm, threshold, distance_method='Hausdorff',
             q = torch.as_tensor(Xn[s:e], dtype=dtype, device=device)
             d = _fiber_block_distances(q, f, threshold, distance_method, sigmasq, bilateral)
         except torch.cuda.OutOfMemoryError:
+            if e - s == 1:
+                raise
             torch.cuda.empty_cache()
-            tr = max(1, tr // 2)
+            tr = max(1, (e - s) // 2)
             print(f"<{__name__}> GPU out of memory, retrying with tile size {tr}")
             continue
 
@@ -316,8 +319,10 @@ def rectangular_similarity_tensor(input_polydata_n, input_polydata_m, threshold,
             if distance_method != 'StrictSimilarity':
                 d = torch.exp(-d / (sigma * sigma))
         except torch.cuda.OutOfMemoryError:
+            if e - s == 1:
+                raise
             torch.cuda.empty_cache()
-            tr = max(1, tr // 2)
+            tr = max(1, (e - s) // 2)
             print(f"<{__name__}> GPU out of memory, retrying with tile size {tr}")
             continue
         out[s:e] = d
@@ -347,9 +352,9 @@ def iter_rectangular_similarity(input_polydata_n, input_polydata_m, threshold,
             block = _similarity_tensor_block(queries[start:end], fixed, threshold,
                                              sigma, distance_method, bilateral, sigmasq)
         except torch.cuda.OutOfMemoryError:
-            if rows == 1:
+            if end - start == 1:
                 raise
-            rows = max(1, rows // 2)
+            rows = max(1, (end - start) // 2)
             torch.cuda.empty_cache()
             continue
         yield start, block.t()
@@ -366,12 +371,14 @@ def _similarity_tensor_block(queries, fixed, threshold, sigma, method, bilateral
 
 
 def total_similarity_matrix_strict(X_queries, X_fixed, reflect_mask, threshold,
-                                   sigmasq, gpu_float32=None, tile_rows=None):
+                                   sigmasq, gpu_float32=None, tile_rows=None, row_sum=False):
     """StrictSimilarity matrix used by laterality.
 
     Row i is the StrictSimilarity of query fiber i (x-reflected first when
     reflect_mask[i] is True) to every fiber of X_fixed. Mirrors
     similarity.total_similarity_for_laterality.
+    row_sum=True reduces each CPU-transferred tile immediately with NumPy,
+    avoiding a full host matrix without changing the reduction order.
     """
 
     if torch is None:
@@ -382,10 +389,10 @@ def total_similarity_matrix_strict(X_queries, X_fixed, reflect_mask, threshold,
     out_dtype = numpy.float32 if dtype == torch.float32 else numpy.float64
 
     f = torch.as_tensor(X_fixed, dtype=dtype, device=device)
-    q_all = torch.as_tensor(X_queries, dtype=numpy.float64)
+    q_all = torch.as_tensor(X_queries, dtype=torch.float64)
     reflect_mask = numpy.asarray(reflect_mask, dtype=bool)
 
-    out = numpy.empty((X_queries.shape[0], X_fixed.shape[0]), dtype=out_dtype)
+    out = numpy.empty(X_queries.shape[0] if row_sum else (X_queries.shape[0], X_fixed.shape[0]), dtype=out_dtype)
     n = X_queries.shape[0]
     tr = _choose_tile_rows(n, X_fixed.shape[0], X_queries.shape[1], dtype,
                            device, override=tile_rows)
@@ -403,10 +410,13 @@ def total_similarity_matrix_strict(X_queries, X_fixed, reflect_mask, threshold,
             sim = _fiber_block_distances(q, f, threshold, 'StrictSimilarity',
                                          sigmasq)
         except torch.cuda.OutOfMemoryError:
+            if e - s == 1:
+                raise
             torch.cuda.empty_cache()
-            tr = max(1, tr // 2)
+            tr = max(1, (e - s) // 2)
             continue
-        out[s:e] = sim.cpu().numpy()
+        values = sim.cpu().numpy()
+        out[s:e] = values.sum(1) if row_sum else values
         s = e
 
     return out

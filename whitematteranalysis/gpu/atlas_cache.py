@@ -80,7 +80,7 @@ def load_reference(filename, sigmasq, method='Mean', bilateral=True,
                 return coordinates, probabilities
         except (OSError, ValueError, TypeError, AttributeError, EOFError, KeyError, zipfile.BadZipFile):
             pass
-    coordinates = fiber_tensors.polydata_to_numpy(io.read_polydata(str(filename)), 15)
+    coordinates = fiber_tensors.polydata_to_numpy(io.read_polydata(str(filename), geometry_only=True), 15)
     probabilities = np.empty(0, dtype=probability_dtype)
     if len(coordinates):
         if backend == 'gpu':

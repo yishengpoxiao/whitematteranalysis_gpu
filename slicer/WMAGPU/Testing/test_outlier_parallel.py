@@ -98,14 +98,14 @@ class OutlierParallelTests(unittest.TestCase):
         lock = threading.Lock()
         real_read = wma.io.read_polydata
 
-        def read(path):
+        def read(path, **kwargs):
             nonlocal active, peak
             with lock:
                 active += 1
                 peak = max(peak, active)
             try:
                 time.sleep(.05)
-                return real_read(path)
+                return real_read(path, **kwargs)
             finally:
                 with lock:
                     active -= 1
