@@ -108,3 +108,44 @@ bilateral modes, tiny/large/zero/infinite/NaN sigma and nonfinite coordinates.
 Normalization checks compare both matrix layouts, strided weights, small/empty
 fallbacks, input immutability, the complete large embedding, selected CUDA devices
 and live tensor cleanup.
+
+Eight/sixteen-worker follow-up comparisons pin 16 physical cores and use 4,096
+queries, 2,500 references, 15 points, unilateral distances, threshold 2 mm and
+`RandomState(84)`. Five alternating repeats again return exactly equal matrices.
+
+| Workers | Metric | Previous / current time |
+| --- | --- | ---: |
+| 8 | Mean | 344.51 / 309.51 ms |
+| 8 | Hausdorff | 326.46 / 187.20 ms |
+| 16 | Mean | 780.14 / 295.91 ms |
+| 16 | Hausdorff | 569.12 / 307.17 ms |
+
+The small previous tiles show substantial overhead at 16 workers in this case;
+reducing tile dispatches lowers Mean time by 62.1% and Hausdorff by 46.0%.
+More workers still do not guarantee better throughput: eight workers outperform
+sixteen for the current Hausdorff case. Thread defaults are not changed based on
+this limited matrix workload. The CPU benchmark now accepts query count, worker
+counts, point counts, metric selection and seed to reproduce these profiles.
+
+```bash
+WMA_GPU=off CUDA_VISIBLE_DEVICES= taskset -c 12-27 \
+  python tests/bench_cpu_point_major.py --baseline 8f83f6f --repeat 5 \
+    --queries 4096 --workers 8 16 --points 15 --methods Mean Hausdorff --seed 84 \
+    --output "$NEW_HIGH_THREAD_REPORT"
+```
+
+## Installed delivery
+
+All 12 source CUDA distance, Gaussian, normalization and atlas embedding checks
+pass, alongside the 13 source CPU checks described above. Their first CUDA run
+includes JIT compilation of the parameter combinations.
+
+The universal installer is built from `82fdc3f` and installed through its actual
+UI in an isolated native Slicer 5.2.2 environment. All 40 targeted installed
+checks pass without skips: 26 CPU and 14 CUDA tests, including streamed atlas
+outputs, cache invalidation, parallel outlier removal, laterality and OOM retry
+termination. Native versions are NumPy 1.23.4, SciPy 1.9.2, PyTorch 2.4.1+cu121
+and VTK 9.1.0. A fresh Slicer process loads all five pages, compares CPU/CUDA
+labeling, runs registration and passes four atlas/groupwise core tests. All 101
+packaged and actually installed library/module source files match repository
+bytes. The tested date-free installer is the delivered archive.

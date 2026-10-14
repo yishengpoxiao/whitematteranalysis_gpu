@@ -28,22 +28,29 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--baseline', default='592eefa')
     parser.add_argument('--repeat', type=int, default=5)
+    parser.add_argument('--queries', type=int, default=512)
+    parser.add_argument('--workers', type=int, nargs='+', default=[1, 4])
+    parser.add_argument('--points', type=int, nargs='+', default=[10, 15, 20])
+    parser.add_argument('--methods', nargs='+', choices=('Mean', 'MeanSquared', 'Hausdorff', 'StrictSimilarity'),
+                        default=['Mean', 'MeanSquared', 'Hausdorff', 'StrictSimilarity'])
+    parser.add_argument('--seed', type=int, default=54)
     parser.add_argument('--output', required=True)
     args = parser.parse_args()
     original = baseline_module('whitematteranalysis.gpu._pointmajor_baseline',
                                'gpu/cpu_backend.py', args.baseline)
-    rng = np.random.RandomState(54)
+    rng = np.random.RandomState(args.seed)
     records = []
-    for points in (10, 15, 20):
-        queries = rng.normal(size=(512, points, 3)) * 40.
+    for points in args.points:
+        queries = rng.normal(size=(args.queries, points, 3)) * 40.
         fixed = rng.normal(size=(2500, points, 3)) * 40.
-        for method in ('Mean', 'MeanSquared', 'Hausdorff', 'StrictSimilarity'):
+        for method in args.methods:
             for bilateral in (False, True):
-                for workers in (1, 4):
+                for workers in args.workers:
                     def run(module):
                         return module._distance_matrix(queries, fixed, 2., method, bilateral,
                                                        number_of_jobs=workers)
-                    record = dict(points=points, method=method, bilateral=bilateral, workers=workers,
+                    record = dict(queries=args.queries, fixed=len(fixed), points=points,
+                        method=method, bilateral=bilateral, workers=workers,
                         **compare([lambda: run(original), lambda: run(current)], args.repeat))
                     records.append(record)
                     print(json.dumps(record), flush=True)
