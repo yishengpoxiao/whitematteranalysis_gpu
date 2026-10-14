@@ -118,3 +118,13 @@ after simulated out-of-memory retries; and atlas caching/parallel outlier masks.
 The whole-pipeline objective remains open: the controlled kernel improvements
 above do not establish that every remaining optimization opportunity has been
 exhausted. File I/O and large GPU distance calculations remain material costs.
+
+The universal installer was rebuilt from source `7b8a14d` and installed through
+its actual dialog in a fresh Slicer 5.2.2 Linux profile. All 100 packaged source
+files are byte-identical between the repository, installer payload and installed
+extension. All 34 targeted tests also pass against those installed modules under
+Slicer's own Python/NumPy/SciPy/PyTorch environment, including the compiled Mean
+path and two visible CUDA devices. No Windows/macOS runtime was available.
+A separate fresh Slicer process also discovers and opens all five installed
+module pages, checks CPU/GPU labeling and registration, and passes all four
+installed core functional tests.
