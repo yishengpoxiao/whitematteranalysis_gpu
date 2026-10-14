@@ -30,6 +30,7 @@
 - Add explicit `-g auto|on|off` forwarding to the complete ORG shell pipeline.
   This prevents child argparse defaults from overriding CPU-only environment
   settings. Respect `-n` for outlier workers instead of hardcoding 80 workers.
+  Normalize numeric `WMA_GPU=0/1` values to `off/on` as accepted by the backend.
 - Correct CPU distance tiling: the previous implementation calculated a tile
   size but submitted entire thread partitions. Workers now fill disjoint output
   slices using bounded tiles, including with one worker. Permit one-row tiles
@@ -77,6 +78,10 @@ worker thread. Yielding in progress callbacks did not resolve that limitation
 and was not retained. VTK 9.4 introduced wrapper hints to release the lock for
 pipeline updates; see [VTK concurrency notes](https://docs.vtk.org/en/v9.6-final/release_details/9.4/python-hint-unblock.html).
 No claim of fully responsive large-file reading is made for older Slicer builds.
+
+The [complete ORG CLI comparison](benchmark-org-2026-10-14.md) records successful
+full-input joblib, CPU-matrix, and GPU runs, stage timings, memory, and independent
+output validation. It is separate from the bounded Slicer display/loading checks.
 
 A separate native Slicer check used a 100,000-fiber input with complete ORG
 reference files (800/800). With the default 40 mm length filter, labeling without

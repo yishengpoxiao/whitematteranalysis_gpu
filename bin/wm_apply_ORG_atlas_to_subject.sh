@@ -103,6 +103,8 @@ while getopts ":hi:i:o:a:s:n:r:t:x:d:m:c:g:" opt; do
 done
 
 case "$GPUMode" in
+    1) GPUMode=on ;;
+    0) GPUMode=off ;;
     auto|on|off) ;;
     *) echo "ERROR: GPU acceleration must be auto, on, or off."; exit 1 ;;
 esac
