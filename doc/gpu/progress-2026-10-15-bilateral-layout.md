@@ -58,12 +58,20 @@ native Windows/macOS speedups.
 ## Validation and reproduction
 
 CUDA tests compare all four fiber metrics, both bilateral modes, float64/float32,
-1–50 points, threshold values including clipping boundaries, NaN/Inf, strided
+1–50 points, zero/nonzero thresholds and clipped distances, NaN/Inf, strided
 inputs, selected-device execution, and input preservation. Atlas tests compare
 full/streamed outputs and allocation retries; outlier tests compare serial and
 parallel CPU/GPU masks. CPU tests compare all metrics, bilateral modes, one/four
 workers, and mixed compiled/NumPy partial tiles against original per-fiber values,
 including large registration objectives and several sigma values.
+
+The rebuilt universal installer bundles source revision `befdd51`. An isolated
+Linux Slicer 5.2.2 installation verifies the five pages, CPU/CUDA labeling,
+registration, core outputs, selected GPU execution, loader behavior, locking, and
+allocator cleanup. All 12 installed CPU-tiling, CUDA-distance and parallel-outlier
+tests pass, with Triton enabled and Slicer's SciPy 1.9.2. All 28 bundled/installed
+WMA Python files match committed source bytes. No optional PyTorch download is
+performed during tests.
 
 ```bash
 export PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.:tests
