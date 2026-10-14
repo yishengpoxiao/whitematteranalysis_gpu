@@ -382,6 +382,11 @@ array types and metadata. See the [file-stage record](../../doc/gpu/progress-202
 for round-trip checks and compression measurements. The CLI's independent file
 workers are separate from Slicer's in-memory workflow.
 
+`WMA_VTP_COMPRESSION=lz4` optionally selects VTK's lossless LZ4 writer for WMA
+VTP exports. Default Slicer/library export uses compact zlib. See the
+[codec record](../../doc/gpu/progress-2026-10-15-intermediate-codec.md) for native
+Slicer reading checks and the measured speed/storage tradeoff.
+
 
 Slicer 5.2.2 on Linux was used to verify Extension Manager installation, the five current
 modules, node selection without SlicerDMRI, CPU/GPU labeling agreement, affine

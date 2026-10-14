@@ -169,6 +169,11 @@ def write_polydata(polydata, filename):
     elif (extension == '.vtp'):
         writer = vtk.vtkXMLPolyDataWriter()
         writer.SetDataModeToBinary()
+        compression = os.environ.get('WMA_VTP_COMPRESSION', 'zlib')
+        if compression == 'lz4':
+            writer.SetCompressorTypeToLZ4()
+        elif compression != 'zlib':
+            raise ValueError('WMA_VTP_COMPRESSION must be zlib or lz4.')
         writer.SetCompressionLevel(1)
     else:
         print('Cannot recognize model file format')

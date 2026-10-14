@@ -51,6 +51,22 @@ additional storage for this sample. Round-trip coordinates, numeric arrays,
 array types and string metadata match exactly. This is a serialization sample,
 not a full-pipeline speedup or a file-size bound for other datasets.
 
+The complete GPU case is also rerun with frozen source `1e6172a`, four pinned CPU
+cores and the same full clinical input. Total wall time is 205.09 s (3:25), down
+from the preceding 458.22 s (7:38); maximum host RSS is 10.48 GiB. Registration,
+labeling/saving and outlier removal take 31.04/50.64/37.60 s. Hemisphere assessment,
+Slicer inverse hardening, hemisphere separation and anatomical appending take
+19.52/29.78/17.98/15.54 s. These are single shared-workstation runs, including
+imports and I/O, with changing cache/load conditions.
+
+All 800 initial, 800 outlier-removed, 800 transformed and 74 anatomical files
+pass exact decoded coordinate, numeric-array, type, name and string-field
+comparisons with the original complete GPU case. Total fiber counts remain
+245,946/130,737/130,737/93,766. Saved transform parameters match exactly. Compressed
+bytes change with the codec; all 800 Slicer-native transformed files remain
+byte-identical. Completion markers and every expected filename are checked.
+This run uses zlib intermediates and predates the subsequent LZ4 optimization.
+
 ## Validation
 
 Targeted CLI comparisons run the old scripts and current one/two-worker scripts

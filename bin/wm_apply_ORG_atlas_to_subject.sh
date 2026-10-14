@@ -1,5 +1,15 @@
 #!/bin/bash
 
+function all_clusters_present {
+    local directory="$1"
+    local index filename
+    for ((index=1; index<=800; index++)); do
+        printf -v filename '%s/cluster_%05d.vtp' "$directory" "$index"
+        [ -f "$filename" ] || return 1
+    done
+    return 0
+}
+
 function Usage {
     cat <<USAGE
 Usage:
@@ -23,6 +33,8 @@ Optional arguments:
           Four workers are recommended when at least four CPU cores are available.
      -g:  GPU acceleration: auto, on, or off (default: WMA_GPU environment variable, otherwise auto).
           Use -g off with WMA_CPU_FAST=0 for original joblib, or WMA_CPU_FAST=1 for CPU matrix acceleration.
+          Intermediate VTP files use lossless LZ4; set WMA_VTP_COMPRESSION=zlib for compact intermediates.
+          Final anatomical tract export uses the caller's compression setting (default: lossless zlib).
      -x:  If the job is being run in an environment without a X client, a virtual X server environment is needed (for 
            transforming fiber clusters in the atlas space back to the tractography space using 3D Slicer). Use value 1 
            to indicate the usage of a virtual X server (default 0).
@@ -278,9 +290,9 @@ FCcaseID=${fn%.*}
 
 echo "<wm_apply_ORG_atlas_to_subject> Fiber clustering for whole-brain 800 fiber cluster parcellation."
 FiberClusteringInitialFolder=$OutputCaseFolder/FiberClustering/InitialClusters
-if [ ! -f $FiberClusteringInitialFolder/$FCcaseID/cluster_00800.vtp ]; then
-	wm_cluster_from_atlas.py -gpu "$GPUMode" -j $NumThreads \
-		$RegTractography $FCAtlasFolder $FiberClusteringInitialFolder -norender
+if ! all_clusters_present "$FiberClusteringInitialFolder/$FCcaseID"; then
+	WMA_VTP_COMPRESSION="${WMA_VTP_COMPRESSION:-lz4}" wm_cluster_from_atlas.py -gpu "$GPUMode" -j $NumThreads \
+		$RegTractography $FCAtlasFolder $FiberClusteringInitialFolder -norender || exit 1
 else
 	echo " - initial fiber clustering has been done."
 fi
@@ -297,9 +309,9 @@ fi
 
 echo "<wm_apply_ORG_atlas_to_subject> Outlier fiber removal."
 FiberClusteringOutlierRemFolder=$OutputCaseFolder/FiberClustering/OutlierRemovedClusters
-if [ ! -f $FiberClusteringOutlierRemFolder/${FCcaseID}_outlier_removed/cluster_00800.vtp ]; then
-	wm_cluster_remove_outliers.py -gpu "$GPUMode" -j $NumThreads \
-		$FiberClusteringInitialFolder/$FCcaseID $FCAtlasFolder $FiberClusteringOutlierRemFolder
+if ! all_clusters_present "$FiberClusteringOutlierRemFolder/${FCcaseID}_outlier_removed"; then
+	WMA_VTP_COMPRESSION="${WMA_VTP_COMPRESSION:-lz4}" wm_cluster_remove_outliers.py -gpu "$GPUMode" -j $NumThreads \
+		$FiberClusteringInitialFolder/$FCcaseID $FCAtlasFolder $FiberClusteringOutlierRemFolder || exit 1
 else
 	echo " - outlier fiber removal has been done."
 fi
@@ -316,7 +328,7 @@ fi
 
 echo "<wm_apply_ORG_atlas_to_subject> Hemisphere location assessment in the atlas space."
 if [ ! -f $FiberClusteringOutlierRemFolder/${FCcaseID}_outlier_removed/cluster_location_by_hemisphere.log ]; then
-	wm_assess_cluster_location_by_hemisphere.py \
+	WMA_VTP_COMPRESSION="${WMA_VTP_COMPRESSION:-lz4}" wm_assess_cluster_location_by_hemisphere.py \
 		-j "$NumThreads" -clusterLocationFile "$FCAtlasFolder/cluster_hemisphere_location.txt" \
 		"$FiberClusteringOutlierRemFolder/${FCcaseID}_outlier_removed" || exit 1
 else
@@ -393,7 +405,7 @@ echo "<wm_apply_ORG_atlas_to_subject> Separate fiber clusters by hemisphere."
 SeparatedClustersFolder=$OutputCaseFolder/FiberClustering/SeparatedClusters
 if [ ! -f "$SeparatedClustersFolder/hemisphere_separation_complete.log" ]; then
 
-	wm_separate_clusters_by_hemisphere.py -j "$NumThreads" "$FiberClustersInTractographySpace" "$SeparatedClustersFolder" || exit 1
+	WMA_VTP_COMPRESSION="${WMA_VTP_COMPRESSION:-lz4}" wm_separate_clusters_by_hemisphere.py -j "$NumThreads" "$FiberClustersInTractographySpace" "$SeparatedClustersFolder" || exit 1
 
 else
 	echo " - separation has been done."

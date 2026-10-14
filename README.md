@@ -81,6 +81,11 @@ also verifies all cluster/anatomical files against the preceding run.
 Independent CLI file stages now honor the pipeline worker count, and VTP writing
 uses fast lossless compression. See the [file-stage record](doc/gpu/progress-2026-10-15-file-stages.md).
 
+The ORG CLI uses LZ4 for disposable intermediate VTPs and compact zlib for final
+anatomical export. Set `WMA_VTP_COMPRESSION=zlib` for compact intermediates, or
+`lz4` to select it explicitly for library writes. See the
+[intermediate codec record](doc/gpu/progress-2026-10-15-intermediate-codec.md).
+
 ## 3D Slicer extension
 
 Use the [universal installer](slicer/WMAGPU/dist/WMAGPU-Installer.zip).
