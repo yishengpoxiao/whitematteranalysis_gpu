@@ -66,6 +66,13 @@ hardening of nine bundles, including an empty bundle and tensor metadata. Output
 match byte-for-byte. A separate nine-transform run checks sorted correspondence
 and distinct transforms. Successful worker logs are removed.
 
+The rebuilt universal installer bundles source revision `1e6172a`. An isolated
+Linux Slicer 5.2.2 installation verifies all five pages, CPU/CUDA labeling,
+registration, core output/persistence checks, selected-device execution, loader
+behavior, locking and allocator cleanup. All 28 bundled/installed WMA Python
+files match committed source bytes. Optional PyTorch downloads are not performed
+by these tests.
+
 ```bash
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.:tests python -m unittest test_cli_file_stages -v
 
