@@ -65,6 +65,14 @@ optimizer refresh/failure cleanup, and optional Triton fallback. The fused affin
 transform matches the original VTK coordinates exactly for several point counts,
 strided inputs, rigid/affine/shear modes, and repeated matrix updates.
 
+The universal installer bundles source revision `1b11dab`. It installs in an
+isolated Linux Slicer 5.2.2 environment, and all 28 bundled/installed WMA Python
+files match repository source bytes. Fresh installed-code checks discover all
+five pages, compare CPU/CUDA labeling, run registration and four core tests, and
+verify GPU controls, selected-device execution, loader behavior, workflow locking,
+and memory cleanup after successful/failed computations. No optional PyTorch
+download is performed by these tests.
+
 Use local input variables; private paths and generated geometry are not stored
 in this repository:
 
