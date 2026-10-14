@@ -86,11 +86,15 @@ RTX 4090 on Linux. Runs are sequential on a shared workstation.
 | Outlier stage | Previous CLI | New, empty cache | New, cache hit |
 | --- | ---: | ---: | ---: |
 | GPU, preliminary repeat | 30.78 s | 29.46 s | 23.77 / 24.26 s |
+| GPU, final source and reproducible benchmark | 27.07 s | 29.11 s | 23.65 / 23.89 s |
 | CPU matrix, four processes | 148.58 s | 135.15 s | 44.27 s |
 
 Every run checks the exact catalogue of 800 clusters, every encoded VTP byte and
 the complete `cluster_log.txt`, including mean distances and probabilities.
-All comparisons pass. These figures describe this stage only. Cache-hit results
+All comparisons pass. The final GPU cache-hit median is 23.77 s, 12.2% below
+its 27.07 s preceding CLI baseline; its cold run is 7.5% slower because it builds
+the cache. The CPU cache-hit run is 70.2% below its baseline. These figures
+describe this stage only. Cache-hit results
 must not be presented as cold-start or complete-pipeline measurements.
 
 Profiling the preceding GPU CLI across all occupied clusters attributes 55.12
@@ -106,3 +110,12 @@ metrics, bilateral modes and GPU precisions; cold/warm equality; parameter,
 reference timestamp and implementation invalidation; damaged/unavailable and
 disabled caches; empty references; concurrent atomic writers; and the existing
 Slicer parallel mask, stream, callback and failure contracts.
+
+The universal installer was rebuilt from source commit `76a3f1b` and installed
+through its actual dialog in a fresh Slicer 5.2.2 Linux profile. All 100 packaged
+source files match the installer payload and installed files byte for byte.
+The nine cache/outlier tests also pass against the installed extension's WMA
+and core modules under Slicer's own NumPy/SciPy/PyTorch environment.
+A separate fresh Slicer process discovers and opens all five installed module
+pages, verifies CPU/GPU labeling and registration, and passes the four installed
+core functional tests. Windows/macOS execution was not available for validation.
