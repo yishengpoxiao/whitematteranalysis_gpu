@@ -22,11 +22,6 @@ import numpy
 
 from .config import get_device, float32_enabled, config
 
-try:
-    import torch
-except ImportError:
-    torch = None
-
 from . import fiber_tensors
 
 

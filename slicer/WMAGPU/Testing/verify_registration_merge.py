@@ -4,6 +4,7 @@ from pathlib import Path
 import os
 import sys
 import tempfile
+import time
 from unittest.mock import patch
 
 import numpy as np
@@ -39,6 +40,7 @@ try:
         assert installed in Path(core.__file__).parents, core.__file__
         assert installed in Path(wma.__file__).parents, wma.__file__
     register, group, pipeline, merge = widgets
+    assert len(merge._sceneObservers) == 3, 'Merge page setup did not complete'
     assert register.registrationOptions.method.findText('rigid_affine_fast') >= 0
     assert register.registrationOptions.method.findText('nonrigid_10') >= 0
     assert group.registrationOptions.method.findText('affine_fast_cheap') >= 0
@@ -154,7 +156,10 @@ try:
 
     excluded = common.add_tractography_node('excluded_subject')
     excluded.SetAndObservePolyData(tractography())
-    merge.refreshNodes()
+    with patch.object(common, 'tractography_node_types', return_value=['vtkMRMLModelNode'] * 2):
+        merge.refreshNodes()
+    ids = [merge.nodeTable.item(row, 0).data(qt.Qt.UserRole) for row in range(merge.nodeTable.rowCount)]
+    assert len(ids) == len(set(ids)), 'Overlapping node classes produced duplicate checklist rows'
     chosen = {moving.GetID(), fixed.GetID()}
     for row in range(merge.nodeTable.rowCount):
         item = merge.nodeTable.item(row, 0)
@@ -194,6 +199,37 @@ try:
             pass
         else:
             raise AssertionError('Invalid merge was accepted')
+    slicer.app.processEvents()
+    refreshes = []
+    merge._refreshTimer.connect('timeout()', lambda: refreshes.append(True))
+    start = time.perf_counter()
+
+    def during_batch(text):
+        slicer.app.processEvents()
+        assert not merge._refreshTimer.isActive()
+        assert not refreshes, 'Checklist refreshed inside a scene batch'
+
+    batch = common.show_clusters_in_scene([tractography()] * 800,
+        base_name='merge_batch_test', visible=False, progress_callback=during_batch)
+    slicer.app.processEvents()
+    assert len(refreshes) == 1, len(refreshes)
+    refreshes.clear()
+    folder = WMAMergeMRMLLogic().merge(batch, '800 selected tracts')
+    assert not slicer.mrmlScene.IsBatchProcessing()
+    assert all(hierarchy.GetItemParent(hierarchy.GetItemByDataNode(node)) == folder for node in batch)
+    slicer.app.processEvents()
+    assert len(refreshes) == 1, len(refreshes)
+    with patch.object(core, 'append_polydatas', side_effect=RuntimeError('merge test failure')):
+        try:
+            WMAMergeMRMLLogic().merge([fixed], 'failed merge', combine=True)
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError('Merge failure did not propagate')
+    assert not slicer.mrmlScene.IsBatchProcessing(), 'Merge failure left scene batch open'
+    assert merge.nodeTable.updatesEnabled
+    print('MERGE_800_SECONDS:', time.perf_counter() - start, flush=True)
+    common.show_clusters_in_scene([], base_name='merge_batch_test')
     merge.cleanup()
     print('REGISTRATION_AND_MERGE_VERIFIED', flush=True)
 except Exception:

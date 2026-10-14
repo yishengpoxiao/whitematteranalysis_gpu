@@ -60,6 +60,15 @@ Internet is required only when dependencies need downloading.
 | WMA Atlas Builder | Atlas construction through multisubject spectral clustering |
 | WMA Merge & MRML | Checkbox node selection, named folders or combined fibers, and directory MRML export |
 
+Opening a workflow page uses lazy computation imports and a shared environment
+check. PyTorch, SciPy, and Matplotlib load when the requested operation needs them;
+page setup performs no CUDA probe, dependency download, or package installation.
+The first computation can therefore take longer than subsequent computations.
+In a bounded Linux Slicer 5.2.2 measurement, initializing all five pages decreased
+from 3.24 s to 0.035 s. This excludes Slicer startup, viewport rendering, and data
+loading; Windows still requires native timing. See
+[measurement details](https://github.com/yishengpoxiao/whitematteranalysis_gpu/blob/main/doc/gpu/progress-2026-10-14.md).
+
 ### Registration methods and transforms
 
 **WMA Tractography Registration** accepts a **Moving tractography** node and a
@@ -90,6 +99,12 @@ the upstream 200 mm cube centered at RAS zero; inputs must fit that atlas space.
 `TEST` presets check execution and are not production-quality settings.
 Registration uses one GPU; the first selected CUDA device is used.
 
+Pairwise and Pipeline registration reuse length-filtered moving/fixed inputs
+across iterations. Input replacement, VTK geometry modification times, and length
+limit changes invalidate the cache. Random sampling seeds, sample order, and
+resampling remain unchanged. The run retains up to two filtered polydata copies
+in host memory; these are released with the registration object.
+
 All three workflows retain their final transforms as Slicer **Transform** nodes.
 Pairwise registration and Pipeline save them as `.h5` files when file output is
 checked; Groupwise always saves one `.h5` per subject alongside its outputs.
@@ -118,6 +133,12 @@ nodes update the checklist; **Refresh nodes** also picks up geometry or name cha
 node and a nonempty output name are required. Slicer may suffix a node name if it
 already exists. Directory file appending and optional `scene.mrml` export remain
 separate actions.
+
+Scene grouping and combining pause rendering and batch MRML updates. The node
+checklist refreshes once after a scene batch, rather than scanning the scene as
+each cluster is added. Table painting is suspended while rows are populated;
+overlapping node classes produce only one checkbox per node. Batch state and
+rendering are restored even when merging fails.
 
 Outlier removal computes independent occupied clusters in parallel. **Outlier
 workers** defaults to **Auto**, using available CPU cores and limiting GPU
@@ -235,6 +256,14 @@ This extension supports local Install from file and is not listed in the public
 Extensions Index.
 
 ## Validation
+
+`Testing/test_startup.py` verifies lazy imports and CPU helpers without importing
+PyTorch in a fresh interpreter. `Testing/verify_startup.py` measures all five page
+initializations in a fresh Slicer process and checks that heavy computation packages
+are not newly imported. The registration tests also compare sampled arrays and RNG
+state with the previous preprocessing path and check cache invalidation. The Slicer
+registration/merge test includes 800-node batching, one checklist refresh per batch,
+duplicate node-class handling, and cleanup after a failed merge.
 
 `Testing/test_registration.py` verifies every CLI preset schedule and bounded
 CPU/CUDA affine, rigid, and nonrigid registration, inverse transforms, rigid

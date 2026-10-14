@@ -34,14 +34,28 @@ Modules:
 
 """
 
+from importlib import import_module as _import_module
+
 from .config import (config, set_gpu, set_float32, set_devices, set_tile_rows,
                      use_gpu, float32_enabled, get_device, visible_device_count,
                      add_gpu_arguments, apply_gpu_arguments)
 
-# import the backends so that `wma.gpu.distance` etc. always resolve.
-# None of them import torch unconditionally at their module level, so
-# this stays safe in environments without torch.
-from . import fiber_tensors, distance, registration, linalg, cpu_backend
+_BACKENDS = ('fiber_tensors', 'distance', 'registration', 'linalg', 'cpu_backend')
+__all__ = ('config', 'set_gpu', 'set_float32', 'set_devices', 'set_tile_rows',
+           'use_gpu', 'float32_enabled', 'get_device', 'visible_device_count',
+           'add_gpu_arguments', 'apply_gpu_arguments', 'available', *_BACKENDS)
+
+
+def __getattr__(name):
+    if name in _BACKENDS:
+        module = _import_module('.' + name, __name__)
+        globals()[name] = module
+        return module
+    raise AttributeError("module %r has no attribute %r" % (__name__, name))
+
+
+def __dir__():
+    return sorted(set(globals()) | set(_BACKENDS))
 
 
 def available():

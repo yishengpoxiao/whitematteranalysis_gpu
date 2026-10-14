@@ -5,6 +5,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 import vtk
@@ -124,6 +125,59 @@ class RegistrationTests(unittest.TestCase):
                 self.assertTrue((output / 'registration_atlas.vtk').is_file())
                 for transform in result['transforms']:
                     self.assertEqual(transform.IsA('vtkBSplineTransform'), mode == 'nonrigid')
+
+    def test_preprocessing_reuse_preserves_samples_and_invalidates(self):
+        registration = wma.congeal_to_atlas.SubjectToAtlasRegistration()
+        registration.set_subject(tractography(), 'moving')
+        registration.set_atlas(tractography(), 'fixed')
+        registration.fiber_length = 0.
+        registration.save_iteration_transforms = False
+
+        def reference_sample(pd, count, seed):
+            filtered = wma.filter.preprocess(pd, registration.fiber_length,
+                max_length_mm=registration.fiber_length_max, return_indices=False,
+                preserve_point_data=False, preserve_cell_data=False, verbose=False)
+            sampled = wma.filter.downsample(filtered, count, verbose=False, random_seed=seed)
+            fibers = wma.fibers.FiberArray()
+            fibers.convert_from_polydata(sampled, registration.points_per_fiber)
+            return np.array([fibers.fiber_array_r, fibers.fiber_array_a, fibers.fiber_array_s])
+
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+                wma.congeal_multisubject, 'congeal_multisubject_inner_loop',
+                side_effect=lambda fixed, moving, initial, *a, **kw: (initial, [0., 0.], 0.)) as loop:
+            registration.output_directory = directory
+            cases = [('initial', 2), ('samples', 0), ('minimum', 2), ('maximum', 2),
+                     ('new_subject', 1), ('atlas_points', 1)]
+            for change, expected_calls in cases:
+                if change == 'samples':
+                    registration.mean_brain_size, registration.subject_brain_size = 8, 4
+                    registration.points_per_fiber = 5
+                elif change == 'minimum':
+                    registration.fiber_length = 1.
+                elif change == 'maximum':
+                    registration.fiber_length_max = 200.
+                elif change == 'new_subject':
+                    registration.set_subject(tractography(), 'replacement')
+                    registration.mean_brain_size, registration.subject_brain_size = 4, 100
+                elif change == 'atlas_points':
+                    points = registration.atlas_polydata.GetPoints()
+                    points.SetPoint(0, -19., 0., 0.)
+                    points.Modified()
+                seed = registration.random_seed + registration.total_iterations + 1
+                np.random.seed(101)
+                fixed = reference_sample(registration.atlas_polydata, registration.mean_brain_size, seed)
+                moving = reference_sample(registration.subject_polydata, registration.subject_brain_size, seed)
+                expected_state = np.random.get_state()
+                np.random.seed(101)
+                with patch.object(wma.filter, 'preprocess', wraps=wma.filter.preprocess) as preprocess:
+                    registration.iterate()
+                self.assertEqual(preprocess.call_count, expected_calls, change)
+                np.testing.assert_array_equal(loop.call_args.args[0], fixed)
+                np.testing.assert_array_equal(loop.call_args.args[1], moving)
+                state = np.random.get_state()
+                self.assertEqual(state[0], expected_state[0])
+                np.testing.assert_array_equal(state[1], expected_state[1])
+                self.assertEqual(state[2:], expected_state[2:])
 
 
 if __name__ == '__main__':

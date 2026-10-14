@@ -95,7 +95,7 @@ def main():
             for pidx in range(0, sampledNpts):
                 point = sampledCellPts.GetPoint(pidx)
     
-                point_ijk = apply_affine(numpy.linalg.inv(volume.affine), point)
+                point_ijk = apply_affine(volume_inverse_affine, point)
                 point_ijk = numpy.rint(point_ijk).astype(numpy.int32)
                 point_ijk = (point_ijk[0], point_ijk[1], point_ijk[2])
 
@@ -145,7 +145,7 @@ def main():
             for pidx in range(0, ptids.GetNumberOfIds()):
                 point = inpoints.GetPoint(ptids.GetId(pidx))
 
-                point_ijk = apply_affine(numpy.linalg.inv(volume.affine), point)
+                point_ijk = apply_affine(volume_inverse_affine, point)
                 point_ijk = numpy.rint(point_ijk).astype(numpy.int32)
                 point_ijk = (point_ijk[0], point_ijk[1], point_ijk[2])
 
@@ -179,6 +179,7 @@ def main():
         return new_voxel_data
     
     volume = nibabel.load(args.refvolume)
+    volume_inverse_affine = numpy.linalg.inv(volume.affine)
     print('<wm_tract_to_volume>', args.refvolume, ', input volume shape: ', volume.get_fdata().shape)
     
     inpd = wma.io.read_polydata(args.inputVTK)

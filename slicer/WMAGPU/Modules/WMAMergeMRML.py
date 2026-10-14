@@ -48,16 +48,23 @@ class WMAMergeMRMLLogic(ScriptedLoadableModuleLogic):
             raise ValueError('Check at least one tractography node.')
         if not name.strip():
             raise ValueError('Specify an output name.')
-        if combine:
-            merged = _CORE.append_polydatas([common.world_polydata(node) for node in nodes])
-            result = common.add_tractography_node(name.strip())
-            result.SetAndObservePolyData(merged)
-            return result
-        hierarchy = slicer.vtkMRMLSubjectHierarchyNode.GetSubjectHierarchyNode(slicer.mrmlScene)
-        folder = hierarchy.CreateFolderItem(hierarchy.GetSceneItemID(), name.strip())
-        for node in nodes:
-            hierarchy.SetItemParent(hierarchy.GetItemByDataNode(node), folder)
-        return folder
+        scene = slicer.mrmlScene
+        slicer.app.pauseRender()
+        scene.StartState(scene.BatchProcessState)
+        try:
+            if combine:
+                merged = _CORE.append_polydatas([common.world_polydata(node) for node in nodes])
+                result = common.add_tractography_node(name.strip())
+                result.SetAndObservePolyData(merged)
+                return result
+            hierarchy = slicer.vtkMRMLSubjectHierarchyNode.GetSubjectHierarchyNode(scene)
+            folder = hierarchy.CreateFolderItem(hierarchy.GetSceneItemID(), name.strip())
+            for node in nodes:
+                hierarchy.SetItemParent(hierarchy.GetItemByDataNode(node), folder)
+            return folder
+        finally:
+            scene.EndState(scene.BatchProcessState)
+            slicer.app.resumeRender()
 
 
 class WMAMergeMRMLWidget(ScriptedLoadableModuleWidget):
@@ -138,12 +145,17 @@ class WMAMergeMRMLWidget(ScriptedLoadableModuleWidget):
         common.add_status_area(self, self.layout)
         self.statusLabel.setPlainText(
             "whitematteranalysis: OK" if wma_ok else wma_detail)
-        self._refreshPending = False
+        self._refreshTimer = qt.QTimer()
+        self._refreshTimer.setSingleShot(True)
+        self._refreshTimer.connect('timeout()', self.refreshNodes)
         self._sceneObservers = [slicer.mrmlScene.AddObserver(event, self.scheduleRefresh)
                                 for event in (slicer.mrmlScene.NodeAddedEvent, slicer.mrmlScene.NodeRemovedEvent)]
+        self._sceneObservers.append(slicer.mrmlScene.AddObserver(
+            slicer.mrmlScene.EndBatchProcessEvent, lambda *args: self._refreshTimer.start(0)))
         self.refreshNodes()
 
     def cleanup(self):
+        self._refreshTimer.stop()
         for observer in getattr(self, '_sceneObservers', []):
             slicer.mrmlScene.RemoveObserver(observer)
         self._sceneObservers = []
@@ -152,9 +164,8 @@ class WMAMergeMRMLWidget(ScriptedLoadableModuleWidget):
         self.refreshNodes()
 
     def scheduleRefresh(self, *args):
-        if not self._refreshPending:
-            self._refreshPending = True
-            qt.QTimer.singleShot(0, self.refreshNodes)
+        if not slicer.mrmlScene.IsBatchProcessing():
+            self._refreshTimer.start(0)
 
     def selectedNodes(self):
         nodes = []
@@ -167,22 +178,28 @@ class WMAMergeMRMLWidget(ScriptedLoadableModuleWidget):
         return nodes
 
     def refreshNodes(self):
-        self._refreshPending = False
+        self._refreshTimer.stop()
+        if slicer.mrmlScene.IsBatchProcessing():
+            return
         selected = {node.GetID() for node in self.selectedNodes()}
-        nodes = [node for cls in common.tractography_node_types()
-                 for node in slicer.util.getNodesByClass(cls)
-                 if node.GetPolyData() is not None and node.GetPolyData().GetNumberOfLines() > 0]
-        self.nodeTable.setRowCount(len(nodes))
-        for row, node in enumerate(nodes):
-            item = qt.QTableWidgetItem(node.GetName())
-            item.setFlags(qt.Qt.ItemIsEnabled | qt.Qt.ItemIsSelectable | qt.Qt.ItemIsUserCheckable)
-            item.setData(qt.Qt.UserRole, node.GetID())
-            item.setCheckState(qt.Qt.Checked if node.GetID() in selected else qt.Qt.Unchecked)
-            self.nodeTable.setItem(row, 0, item)
-            fibers = qt.QTableWidgetItem(str(node.GetPolyData().GetNumberOfLines()))
-            fibers.setFlags(qt.Qt.ItemIsEnabled | qt.Qt.ItemIsSelectable)
-            self.nodeTable.setItem(row, 1, fibers)
-        self.nodeTable.resizeColumnsToContents()
+        nodes = list({node.GetID(): node for cls in common.tractography_node_types()
+                      for node in slicer.util.getNodesByClass(cls)
+                      if node.GetPolyData() is not None and node.GetPolyData().GetNumberOfLines() > 0}.values())
+        self.nodeTable.setUpdatesEnabled(False)
+        try:
+            self.nodeTable.setRowCount(len(nodes))
+            for row, node in enumerate(nodes):
+                item = qt.QTableWidgetItem(node.GetName())
+                item.setFlags(qt.Qt.ItemIsEnabled | qt.Qt.ItemIsSelectable | qt.Qt.ItemIsUserCheckable)
+                item.setData(qt.Qt.UserRole, node.GetID())
+                item.setCheckState(qt.Qt.Checked if node.GetID() in selected else qt.Qt.Unchecked)
+                self.nodeTable.setItem(row, 0, item)
+                fibers = qt.QTableWidgetItem(str(node.GetPolyData().GetNumberOfLines()))
+                fibers.setFlags(qt.Qt.ItemIsEnabled | qt.Qt.ItemIsSelectable)
+                self.nodeTable.setItem(row, 1, fibers)
+            self.nodeTable.resizeColumnsToContents()
+        finally:
+            self.nodeTable.setUpdatesEnabled(True)
 
     def checkAll(self, checked):
         for row in range(self.nodeTable.rowCount):

@@ -45,6 +45,7 @@ class SubjectToAtlasRegistration:
         # internal stuff
         self.subject_polydata = None
         self.atlas_polydata = None
+        self._preprocessed = {}
         self.transform = None
         self.transform_as_array = None
         self.objectives = list()
@@ -102,6 +103,18 @@ class SubjectToAtlasRegistration:
         self.atlas_polydata = polydata
         self.atlas_id = atlas_id
 
+    def _preprocessed_polydata(self, polydata, role):
+        """Reuse length filtering until the input geometry or limits change."""
+        key = (polydata, polydata.GetMTime(), self.fiber_length, self.fiber_length_max)
+        cached = self._preprocessed.get(role)
+        if cached is None or cached[0] != key:
+            filtered = wma.filter.preprocess(
+                polydata, self.fiber_length, max_length_mm=self.fiber_length_max,
+                return_indices=False, preserve_point_data=False,
+                preserve_cell_data=False, verbose=False)
+            cached = self._preprocessed[role] = (key, filtered)
+        return cached[1]
+
     def iterate(self):
         self.total_iterations += 1
 
@@ -112,7 +125,7 @@ class SubjectToAtlasRegistration:
             os.makedirs(outdir)
 
         print("filtering and downsampling atlas")
-        mean_brain = wma.filter.preprocess(self.atlas_polydata, self.fiber_length, max_length_mm=self.fiber_length_max, return_indices=False, preserve_point_data=False, preserve_cell_data=False, verbose=False)
+        mean_brain = self._preprocessed_polydata(self.atlas_polydata, 'atlas')
         mean_brain, tmp = wma.filter.downsample(mean_brain, self.mean_brain_size, return_indices=True, verbose=False, random_seed=self.random_seed+self.total_iterations) 
 
         mean_fibers = wma.fibers.FiberArray()
@@ -120,7 +133,7 @@ class SubjectToAtlasRegistration:
         fixed = numpy.array([mean_fibers.fiber_array_r,mean_fibers.fiber_array_a,mean_fibers.fiber_array_s])
         
         print("filtering and downsampling subject")
-        subject_brain = wma.filter.preprocess(self.subject_polydata, self.fiber_length, max_length_mm=self.fiber_length_max, return_indices=False, preserve_point_data=False, preserve_cell_data=False, verbose=False)
+        subject_brain = self._preprocessed_polydata(self.subject_polydata, 'subject')
         subject_brain, tmp = wma.filter.downsample(subject_brain, self.subject_brain_size, return_indices=True, verbose=False, random_seed=self.random_seed+self.total_iterations)
 
         fibers = wma.fibers.FiberArray()

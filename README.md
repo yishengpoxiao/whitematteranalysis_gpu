@@ -32,9 +32,8 @@ python -c "import torch; print(torch.__version__, torch.cuda.is_available())"
 
 `setup.py` reads `requirements_cpu.txt`, so `python -m pip install .` installs
 the CPU/base profile by default. The GPU profile includes it using `-r` and adds
-the official CUDA wheel index alongside the base package index. The older
-`requirements.txt` remains as a preserved dependency snapshot; use the two
-profiles above for current installation.
+the official CUDA wheel index alongside the base package index. Use the two
+profiles above for installation.
 
 The GPU profile targets Linux/Windows x86_64 and Python 3.8–3.12 and uses the
 [official PyTorch CUDA 12.1 index](https://docs.pytorch.org/get-started/previous-versions/#v241).
@@ -81,6 +80,12 @@ multiscale schedules, retaining final Slicer Transform nodes. Merge tools offer
 checkbox selection with named folders or one combined tractography node. Full ORG
 anatomical Pipeline validation requires actual atlas data.
 See [extension installation, dependencies, packaging, and tests](slicer/WMAGPU/README.md).
+
+Workflow pages load computation libraries on demand, so opening the extension
+does not initialize PyTorch, SciPy, or Matplotlib. Successful environment checks
+are reused across pages. Registration reuses unchanged length-filtered inputs,
+and scene merging batches hierarchy updates and checklist refreshes. See the
+[startup and processing measurements](doc/gpu/progress-2026-10-14.md).
 
 # WMA Installation and Usage
 ## 1. Install Python 3:

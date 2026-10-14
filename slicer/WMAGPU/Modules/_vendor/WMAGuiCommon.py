@@ -32,6 +32,9 @@ def ensure_environment():
 
     global CORE, CORE_ERROR, WMA_OK, WMA_DETAIL
 
+    if WMA_OK and CORE is not None:
+        return CORE, WMA_OK, WMA_DETAIL
+
     # bundled pure-python deps first
     if HERE not in sys.path:
         sys.path.insert(0, HERE)
@@ -43,7 +46,6 @@ def ensure_environment():
         WMA_DETAIL = "Bundled WMA failed to load: %s. Reinstall WMAGPU and restart Slicer." % exc
         return None, WMA_OK, WMA_DETAIL
 
-    global CORE
     try:
         import WMAtlasLabelGPUCore
         CORE = WMAtlasLabelGPUCore
