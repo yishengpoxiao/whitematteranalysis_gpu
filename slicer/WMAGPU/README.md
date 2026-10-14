@@ -113,7 +113,7 @@ Only one WMA computation can run at a time within a Slicer process.
 failed runs. Pipeline also releases unused allocations before anatomical mapping,
 saving, and display. **Release unused GPU memory now** performs the same cleanup
 on the selected device when WMA is idle. The status log reports released memory,
-live PyTorch tensors, and remaining allocator reservations.
+allocated PyTorch memory, and remaining allocator reservations.
 
 PyTorch keeps freed allocations in its caching allocator. Cleanup releases unused
 blocks while preserving live tensors. CUDA context and Slicer rendering memory
@@ -121,6 +121,8 @@ can remain visible in `nvidia-smi`, even with zero PyTorch allocated/reserved by
 this is expected and does not imply that WMA retains a tensor. See the official
 [CUDA memory management notes](https://docs.pytorch.org/docs/main/notes/cuda.html#memory-management)
 and [allocated-memory accounting](https://docs.pytorch.org/docs/main/generated/torch.cuda.memory.memory_allocated.html).
+In PyTorch 2.4, cuBLAS workspaces can also remain allocated after matrix operations;
+see [workspace behavior](https://docs.pytorch.org/docs/2.4/notes/cuda.html#cublas-workspaces).
 
 Pairwise and Pipeline registration reuse length-filtered moving/fixed inputs
 across iterations. Input replacement, VTK geometry modification times, and length

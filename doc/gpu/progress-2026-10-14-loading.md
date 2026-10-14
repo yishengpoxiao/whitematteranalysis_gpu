@@ -8,7 +8,7 @@
   apply to the entire workflow; Slicer's rendering device is independent.
 - Release unused PyTorch allocations on the selected device after success or
   failure, enabled by default. Pipeline also releases them before CPU anatomy,
-  saving, and display. A manual action reports released bytes, live tensor bytes,
+  saving, and display. A manual action reports released bytes, allocated bytes,
   and reserved bytes. It preserves live tensors and does not reset CUDA contexts.
   A shared workflow lock prevents event processing from starting overlapping WMA
   computations with conflicting backend/device settings.
@@ -77,6 +77,23 @@ worker thread. Yielding in progress callbacks did not resolve that limitation
 and was not retained. VTK 9.4 introduced wrapper hints to release the lock for
 pipeline updates; see [VTK concurrency notes](https://docs.vtk.org/en/v9.6-final/release_details/9.4/python-hint-unblock.html).
 No claim of fully responsive large-file reading is made for older Slicer builds.
+
+A separate native Slicer check used a 100,000-fiber input with complete ORG
+reference files (800/800). With the default 40 mm length filter, labeling without
+registration retained 82,824 fibers in 658 nonempty categories. Default affine
+registration followed by labeling retained 87,407 fibers in 699 nonempty
+categories, leaving 101 empty categories. Affine scaling changes the lengths
+tested by the filter. These counts describe this check, not a reconstruction of
+the user's earlier settings. Empty fine-grained categories do not directly imply
+that an anatomical tract, which aggregates several categories, is absent.
+
+The real labeling check also distinguishes residual library memory from a WMA
+tensor leak. After allocator cleanup, PyTorch 2.4 retained 8.125 MiB allocated and
+40 MiB reserved. In a separate isolated diagnostic process, clearing cuBLAS
+workspaces reduced both to zero, confirming workspace retention. Production
+cleanup preserves PyTorch library state and uses allocator cleanup; the diagnostic
+private API is not called by the extension. See the version-specific
+[cuBLAS workspace documentation](https://docs.pytorch.org/docs/2.4/notes/cuda.html#cublas-workspaces).
 
 ## Validation
 

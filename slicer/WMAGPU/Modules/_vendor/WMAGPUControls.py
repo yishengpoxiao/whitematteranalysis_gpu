@@ -113,8 +113,8 @@ class GPUControls:
         if report is None:
             self.log('No initialized CUDA allocator to release.')
         else:
-            self.log('GPU %d: released %.1f MiB; live tensors %.1f MiB; reserved %.1f MiB. '
-                     'CUDA context and Slicer rendering memory can remain.' % (
+            self.log('GPU %d: released %.1f MiB; PyTorch allocated %.1f MiB; reserved %.1f MiB. '
+                     'Library workspaces, CUDA context, and Slicer rendering memory can remain.' % (
                          report['device'], report['released'] / 2**20,
                          report['allocated'] / 2**20, report['reserved'] / 2**20))
 
