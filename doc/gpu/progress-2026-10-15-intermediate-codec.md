@@ -51,6 +51,12 @@ registration and core outputs. Both codec round-trip tests and invalid-setting
 checks pass against installed WMA code. All 28 bundled/installed WMA Python
 files match committed source bytes. No optional PyTorch download is performed.
 
+The [complete CPU/GPU comparison](benchmark-org-2026-10-15-final.md) measures
+166.21 s for GPU and 448.67 s for CPU matrix with these changes, using the full
+clinical input and four CPU cores. Every output catalogue and decoded data array
+is checked against the earlier full GPU case; the report states tolerances and
+shared-workstation timing limits.
+
 ```bash
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.:tests WMA_VTP_COMPRESSION=lz4 \
   python -m unittest test_cli_file_stages -v

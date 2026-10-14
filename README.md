@@ -86,6 +86,10 @@ anatomical export. Set `WMA_VTP_COMPRESSION=zlib` for compact intermediates, or
 `lz4` to select it explicitly for library writes. See the
 [intermediate codec record](doc/gpu/progress-2026-10-15-intermediate-codec.md).
 
+The [complete optimized CPU/GPU benchmark](doc/gpu/benchmark-org-2026-10-15-final.md)
+records the latest full-case times, resource use, output catalogue and numerical
+comparisons against the original complete GPU run.
+
 ## 3D Slicer extension
 
 Use the [universal installer](slicer/WMAGPU/dist/WMAGPU-Installer.zip).
