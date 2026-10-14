@@ -97,6 +97,12 @@ file identity, numerical parameters, backend, precision, library versions and
 implementation; changed references are recomputed automatically. See the
 [atlas cache measurements and controls](doc/gpu/progress-2026-10-15-atlas-cache.md).
 
+GPU affine/nonrigid registration reuses pinned probability storage and adaptive
+tile budgets; CPU zero-threshold Mean distances fuse point square roots into
+SciPy's compiled calculation. See the [registration workspace and Mean distance
+measurements](doc/gpu/progress-2026-10-15-registration-workspace.md) for exact
+optimizer/output checks and the measured limits of these gains.
+
 ## 3D Slicer extension
 
 Use the [universal installer](slicer/WMAGPU/dist/WMAGPU-Installer.zip).

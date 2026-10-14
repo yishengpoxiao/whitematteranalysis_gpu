@@ -45,9 +45,9 @@ def _tile_rows(m, points_per_fiber, dtype_bytes, threads):
     return max(1, int(budget // max(1, bytes_per_row)))
 
 
-def _pointwise_squared_distance(q, f):
-    """(b, P, 3) queries vs (m, P, 3) fixed -> (b, m, P) squared
-    distances, with the exact operation order of
+def _pointwise_distances(q, f, euclidean=False):
+    """(b, P, 3) queries vs (m, P, 3) fixed -> (b, m, P) point
+    distances (squared by default), with the exact operation order of
     similarity._fiber_distance_internal_use."""
 
     if (q.dtype == f.dtype == numpy.float64 and len(q) * len(f) >= 4096):
@@ -56,7 +56,8 @@ def _pointwise_squared_distance(q, f):
         from scipy.spatial.distance import cdist
         points = numpy.empty((q.shape[1], len(q), len(f)), dtype=numpy.float64)
         for point in range(q.shape[1]):
-            cdist(q[:, point], f[:, point], metric='sqeuclidean', out=points[point])
+            cdist(q[:, point], f[:, point],
+                  metric='euclidean' if euclidean else 'sqeuclidean', out=points[point])
         return points.transpose(1, 2, 0).copy()
 
     qx = q[:, :, 0][:, None, :]
@@ -75,10 +76,14 @@ def _pointwise_squared_distance(q, f):
     numpy.square(dy, out=dy)
     dx += dy
     # A packed fixed layout must not change the NumPy point reduction order.
-    return numpy.ascontiguousarray(dx)
+    dx = numpy.ascontiguousarray(dx)
+    if euclidean:
+        numpy.sqrt(dx, out=dx)
+    return dx
 
 
-def _reduce_points(d2, distance_method, threshold, sigmasq, points_per_fiber):
+def _reduce_points(d2, distance_method, threshold, sigmasq, points_per_fiber,
+                   euclidean=False):
     """(b, m, P) -> (b, m), mirroring similarity.py:115-147."""
 
     if threshold:
@@ -86,7 +91,8 @@ def _reduce_points(d2, distance_method, threshold, sigmasq, points_per_fiber):
         numpy.clip(d2, 0.0, None, out=d2)
 
     if distance_method == 'Mean':
-        numpy.sqrt(d2, out=d2)
+        if not euclidean:
+            numpy.sqrt(d2, out=d2)
         d = d2.sum(-1)
         d /= float(points_per_fiber)
         numpy.square(d, out=d)
@@ -107,11 +113,13 @@ def _fiber_block_distances(q, f, threshold, distance_method, sigmasq):
     """One tile of queries vs all fixed fibers, both point orders."""
 
     points_per_fiber = q.shape[1]
-    fwd = _reduce_points(_pointwise_squared_distance(q, f),
-                         distance_method, threshold, sigmasq, points_per_fiber)
+    # At zero threshold SciPy can fuse sqrt into its compiled 3D distances.
+    euclidean = distance_method == 'Mean' and not threshold
+    fwd = _reduce_points(_pointwise_distances(q, f, euclidean),
+                         distance_method, threshold, sigmasq, points_per_fiber, euclidean)
     q_rev = q[:, ::-1]
-    rev = _reduce_points(_pointwise_squared_distance(q_rev, f),
-                         distance_method, threshold, sigmasq, points_per_fiber)
+    rev = _reduce_points(_pointwise_distances(q_rev, f, euclidean),
+                         distance_method, threshold, sigmasq, points_per_fiber, euclidean)
 
     if distance_method == 'StrictSimilarity':
         return numpy.maximum(fwd, rev)

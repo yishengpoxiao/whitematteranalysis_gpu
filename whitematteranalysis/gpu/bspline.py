@@ -123,6 +123,7 @@ class NonrigidObjective:
                 torch.as_tensor(a, device=self.device) for a in geometry)
         else:
             self.moving = moving
+        self.workspace = registration._ObjectiveWorkspace(self.fixed, moving.shape[1]) if self.fixed.is_cuda else None
 
     def transform(self, displacement):
         if registration_kernel.triton is None:
@@ -139,4 +140,5 @@ class NonrigidObjective:
 
     def __call__(self, displacement, sigma):
         moved = self.transform(displacement)
-        return registration._inner_loop_objective(self.fixed, moved, sigma * sigma, self.device)
+        return registration._inner_loop_objective(self.fixed, moved, sigma * sigma,
+                                                  self.device, workspace=self.workspace)

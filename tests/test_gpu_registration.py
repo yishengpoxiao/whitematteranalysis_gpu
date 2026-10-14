@@ -15,6 +15,38 @@ from whitematteranalysis.register_two_subjects import (
 
 @unittest.skipUnless(wma.gpu.available(), 'CUDA is required')
 class RegistrationTests(unittest.TestCase):
+    def test_workspace_retries_reuse_and_streams(self):
+        import torch
+        rng = np.random.RandomState(45)
+        fixed = rng.normal(size=(3, 31, 10)) * 40.
+        moving = rng.normal(size=(3, 5, 10)) * 40.
+        x = np.array([0., 0., 0., 0., 0., 0., 1., 1., 1., 0., 0., 0., 0., 0., 0.])
+        expected = gpu.objective_value(fixed, moving, x, [1]*4, 20.)
+        real_probability = gpu._pairwise_probability
+        sizes = []
+
+        def constrained(fixed, moving, sigmasq):
+            sizes.append(len(moving))
+            if len(moving) > 2:
+                raise torch.cuda.OutOfMemoryError('test workspace tile exceeds memory')
+            return real_probability(fixed, moving, sigmasq)
+
+        stream = torch.cuda.Stream()
+        with torch.cuda.stream(stream):
+            objective = gpu.AffineObjective(fixed, moving)
+            objective.workspace.chunk_rows = 5
+            host = objective.workspace.probability
+            self.assertTrue(host.is_pinned())
+            with patch.object(gpu, '_pairwise_probability', side_effect=constrained), patch.object(
+                    torch.cuda, 'mem_get_info', side_effect=AssertionError('repeated memory query')) as memory:
+                self.assertEqual(objective(x, [1]*4, 20.), expected)
+                self.assertEqual(sizes, [5, 2, 2, 1])
+                sizes.clear()
+                self.assertEqual(objective(x, [1]*4, 20.), expected)
+                self.assertEqual(sizes, [2, 2, 1])
+                memory.assert_not_called()
+            self.assertIs(objective.workspace.probability, host)
+
     def test_empty_moving_objective(self):
         objective = gpu.AffineObjective(np.zeros((3, 5, 10)), np.zeros((3, 0, 10)))
         x = np.array([0., 0., 0., 0., 0., 0., 1., 1., 1., 0., 0., 0., 0., 0., 0.])

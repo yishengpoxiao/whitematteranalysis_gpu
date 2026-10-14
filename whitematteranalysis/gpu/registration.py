@@ -108,20 +108,29 @@ def inner_loop_objective(fixed, moving, sigmasq, device=None, chunk_rows=None):
     return _inner_loop_objective(F, M, sigmasq, dev, chunk_rows)
 
 
-def _inner_loop_objective(F, M, sigmasq, dev, chunk_rows=None):
+def _choose_chunk_rows(F, n_moving, dev):
+    bytes_per_row = max(1, F.shape[0] * F.shape[1] * 8 * 6)
+    try:
+        free_bytes, _total = torch.cuda.mem_get_info(dev)
+    except Exception:
+        free_bytes = 4 << 30
+    return max(1, min(n_moving, int(int(free_bytes * 0.5) // bytes_per_row), 8192))
+
+
+class _ObjectiveWorkspace:
+    """Pinned probability storage and adaptive tiles for one optimizer."""
+    def __init__(self, fixed, moving_count):
+        self.chunk_rows = _choose_chunk_rows(fixed, moving_count, fixed.device)
+        self.probability = torch.empty(moving_count, dtype=torch.float64, pin_memory=True)
+
+
+def _inner_loop_objective(F, M, sigmasq, dev, chunk_rows=None, workspace=None):
     """Entropy for prepared (N, P, 3) tensors; retain the CPU reduction."""
-    n_fixed, points_per_fiber = F.shape[:2]
+    n_fixed = F.shape[0]
     n_moving = M.shape[0]
 
     if chunk_rows is None:
-        itemsize = 8
-        bytes_per_row = max(1, n_fixed * points_per_fiber * itemsize * 6)
-        try:
-            free_bytes, _total = torch.cuda.mem_get_info(dev)
-        except Exception:
-            free_bytes = 4 << 30
-        chunk_rows = max(1, min(n_moving, int(int(free_bytes * 0.5) // bytes_per_row),
-                                8192))
+        chunk_rows = workspace.chunk_rows if workspace is not None else _choose_chunk_rows(F, n_moving, dev)
 
     probability = torch.empty(n_moving, dtype=torch.float64, device=dev)
 
@@ -136,12 +145,21 @@ def _inner_loop_objective(F, M, sigmasq, dev, chunk_rows=None):
                 raise
             torch.cuda.empty_cache()
             chunk_rows = max(1, chunk_rows // 2)
+            if workspace is not None:
+                workspace.chunk_rows = chunk_rows
             continue
 
-        probability[s:e] = prob
+        if s == 0 and e == n_moving:
+            probability = prob
+        else:
+            probability[s:e] = prob
         s = e
 
     # register_two_subjects.py:315-329: floor before dividing by n_fixed
+    if workspace is not None:
+        workspace.probability.copy_(probability, non_blocking=True)
+        torch.cuda.current_stream(dev).synchronize()
+        return float(workspace.probability.add_(1e-20).div_(float(n_fixed)).log_().neg_().sum())
     probability = probability.cpu()
     probability = probability + 1e-20
     probability = probability / float(n_fixed)
@@ -200,6 +218,7 @@ class AffineObjective:
             self.matrix = torch.empty((4, 4), dtype=torch.float64, device=self.device)
             self.transformed = torch.empty((moving.shape[1], moving.shape[2], 3),
                                            dtype=torch.float64, device=self.device)
+        self.workspace = _ObjectiveWorkspace(self.fixed, moving.shape[1]) if self.fixed.is_cuda else None
 
     def __call__(self, transform, mode, sigma):
         if registration_kernel.triton is not None and self.moving.is_cuda:
@@ -213,4 +232,4 @@ class AffineObjective:
         else:
             moved = _transform_fiber_tensor(self.moving, transform, mode, self.device)
             moved = moved.permute(1, 2, 0).contiguous()
-        return _inner_loop_objective(self.fixed, moved, sigma * sigma, self.device)
+        return _inner_loop_objective(self.fixed, moved, sigma * sigma, self.device, workspace=self.workspace)
