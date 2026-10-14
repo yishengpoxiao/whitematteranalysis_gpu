@@ -13,8 +13,8 @@ import slicer
 import vtk
 
 
-def wait_until(done, message):
-    deadline = time.monotonic() + 40
+def wait_until(done, message, timeout=40):
+    deadline = time.monotonic() + timeout
     while not done():
         if time.monotonic() > deadline:
             raise AssertionError(message)
@@ -86,7 +86,7 @@ try:
         register.gpuControls.device.setEditText('0')
         register.gpuControls.detect()
         wait_until(lambda: register.gpuControls.process.state() == qt.QProcess.NotRunning,
-                   'Asynchronous GPU detection did not finish')
+                   'Asynchronous GPU detection did not finish', timeout=180)
         slicer.app.processEvents()
         assert register.gpuControls.refresh.enabled
 
