@@ -21,6 +21,8 @@ Optional arguments:
                                               e.g. two-tensor UKF tractography + HCP dMRI acquisition.
      -n:  Number of threads (default = 1). If multiple cores are available, recommended setting is 4.
           Increasing the number of threads does not speed up too much, but it requires more computational resources.) 
+     -g:  GPU acceleration: auto, on, or off (default: WMA_GPU environment variable, otherwise auto).
+          Use -g off with WMA_CPU_FAST=0 for original joblib, or WMA_CPU_FAST=1 for CPU matrix acceleration.
      -x:  If the job is being run in an environment without a X client, a virtual X server environment is needed (for 
            transforming fiber clusters in the atlas space back to the tractography space using 3D Slicer). Use value 1 
            to indicate the usage of a virtual X server (default 0).
@@ -55,6 +57,8 @@ function reportMappingParameters {
  3D Slicer:                   $SlicerPath
  Registration mode:           $RegMode
  Number of threads:           $NumThreads
+ GPU acceleration:            $GPUMode
+ CPU matrix acceleration:     ${WMA_CPU_FAST:-1}
  virtual X server:            $VX
  Export dMRI measures:        $DiffMeasure
  FiberTractMeasurementsCLI:   $FiberTractMeasurementsCLI
@@ -64,7 +68,8 @@ function reportMappingParameters {
 REPORTMAPPINGPARAMETERS
 }
 
-while getopts ":hi:i:o:a:s:n:r:t:x:d:m:c:" opt; do
+GPUMode=${WMA_GPU:-auto}
+while getopts ":hi:i:o:a:s:n:r:t:x:d:m:c:g:" opt; do
 	case $opt in
 		h) Usage; exit 0
 		;;
@@ -82,6 +87,8 @@ while getopts ":hi:i:o:a:s:n:r:t:x:d:m:c:" opt; do
 		;;
 		n) NumThreads="$OPTARG"
 		;;
+        g) GPUMode="$OPTARG"
+        ;;
 		x) VX="$OPTARG"
 		;;
 		d) DiffMeasure="$OPTARG"
@@ -94,6 +101,11 @@ while getopts ":hi:i:o:a:s:n:r:t:x:d:m:c:" opt; do
 		;;
 	esac
 done
+
+case "$GPUMode" in
+    auto|on|off) ;;
+    *) echo "ERROR: GPU acceleration must be auto, on, or off."; exit 1 ;;
+esac
 
 if ! [[ ! "$RegMode" ]] ; then
 	if ! [[ "$RegMode" == "rig" || "$RegMode" == "nonrig" ]]; then
@@ -229,7 +241,7 @@ if [ "$RegMode" == "rig" ]; then
 	RegTractography=$RegistrationFolder/${caseID}/output_tractography/${caseID}_reg.vtk
 	
 	if [ ! -f $RegTractography ]; then
-		wm_register_to_atlas_new.py -mode rigid_affine_fast \
+		wm_register_to_atlas_new.py -gpu "$GPUMode" -mode rigid_affine_fast \
 			$TractographyData $RegAtlasFolder/registration_atlas.vtk $RegistrationFolder/
 	else
 		echo " - registration has been done."
@@ -238,12 +250,12 @@ elif [ "$RegMode" == "nonrig" ]; then
 	RegTractography=$RegistrationFolder/${caseID}_reg/output_tractography/${caseID}_reg_reg.vtk
 	
 	if [ ! -f $RegTractography ]; then
-		wm_register_to_atlas_new.py -mode affine \
+		wm_register_to_atlas_new.py -gpu "$GPUMode" -mode affine \
 			$TractographyData $RegAtlasFolder/registration_atlas.vtk $RegistrationFolder/
 
 		affineRegTract=$RegistrationFolder/${caseID}/output_tractography/${caseID}_reg.vtk
 		
-		wm_register_to_atlas_new.py -mode nonrigid \
+		wm_register_to_atlas_new.py -gpu "$GPUMode" -mode nonrigid \
 			$affineRegTract $RegAtlasFolder/registration_atlas.vtk $RegistrationFolder/
 	else
 		echo " - registration has been done."
@@ -265,7 +277,7 @@ FCcaseID=${fn%.*}
 echo "<wm_apply_ORG_atlas_to_subject> Fiber clustering for whole-brain 800 fiber cluster parcellation."
 FiberClusteringInitialFolder=$OutputCaseFolder/FiberClustering/InitialClusters
 if [ ! -f $FiberClusteringInitialFolder/$FCcaseID/cluster_00800.vtp ]; then
-	wm_cluster_from_atlas.py -j $NumThreads \
+	wm_cluster_from_atlas.py -gpu "$GPUMode" -j $NumThreads \
 		$RegTractography $FCAtlasFolder $FiberClusteringInitialFolder -norender
 else
 	echo " - initial fiber clustering has been done."
@@ -284,7 +296,7 @@ fi
 echo "<wm_apply_ORG_atlas_to_subject> Outlier fiber removal."
 FiberClusteringOutlierRemFolder=$OutputCaseFolder/FiberClustering/OutlierRemovedClusters
 if [ ! -f $FiberClusteringOutlierRemFolder/${FCcaseID}_outlier_removed/cluster_00800.vtp ]; then
-	wm_cluster_remove_outliers.py -j 80 \
+	wm_cluster_remove_outliers.py -gpu "$GPUMode" -j $NumThreads \
 		$FiberClusteringInitialFolder/$FCcaseID $FCAtlasFolder $FiberClusteringOutlierRemFolder
 else
 	echo " - outlier fiber removal has been done."

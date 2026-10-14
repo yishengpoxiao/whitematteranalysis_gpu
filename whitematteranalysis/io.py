@@ -34,7 +34,7 @@ from . import filter
 VERBOSE = 0
 
 
-def read_polydata(filename):
+def read_polydata(filename, progress_callback=None):
     """Read whole-brain tractography as vtkPolyData format."""
 
     if VERBOSE:
@@ -51,6 +51,8 @@ def read_polydata(filename):
         return None
 
     reader.SetFileName(filename)
+    if progress_callback is not None:
+        reader.AddObserver(vtk.vtkCommand.ProgressEvent, lambda caller, event: progress_callback(caller.GetProgress()))
     reader.Update()
     outpd = reader.GetOutput()
     del reader

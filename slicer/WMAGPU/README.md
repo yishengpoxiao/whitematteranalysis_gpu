@@ -9,10 +9,8 @@ The current release is `dist/WMAGPU-Installer.zip`, a universal installer
 that detects the running Slicer version, Python, operating system, and architecture.
 It contains pure Python sources and builds the matching extension layout locally.
 
-The local legacy path `/data/yijie/wma-GPU/slicer` is a symlink to `Modules/` for
-existing Slicer Additional module paths. Obsolete source copies, `.sx` archives,
-and installation scripts were removed. Distribute the ZIP to other computers;
-it does not depend on this local symlink.
+Distribute the ZIP to other computers; it contains the maintained sources and
+does not depend on a separate WMA checkout or a legacy local module path.
 
 ## Installation and use
 
@@ -35,8 +33,10 @@ it does not depend on this local symlink.
 4. Optionally select **Also check / install CUDA PyTorch** before installing.
    Leave it unchecked for CPU mode. Restart after installation, then open
    **Diffusion → WMA GPU** and choose a workflow.
-5. Load `.vtk/.vtp` tractography using Add Data. Select the input node, atlas
-   directory, output directory, and backend, then run the workflow.
+5. In Pipeline or Tractography Registration, use **Load tractography file...**
+   to read `.vtk/.vtp` in the background. Inputs remain hidden unless **Show after
+   loading** is checked. Existing nodes loaded through Add Data are also accepted.
+   Select the input node, atlas directory, output directory, and backend, then run.
 
 The universal ZIP is **not** an Extensions Manager "Install from file" package.
 Run its installer inside Slicer; it creates and installs that Slicer's matching
@@ -87,7 +87,7 @@ and `custom`. Groupwise registration exposes its own CLI presets, including
 The default remains `affine` on all three pages.
 
 Expand **Registration settings / custom schedule** to set the maximum fiber
-length, random seed, intermediate output saving, GPU float32, and CUDA device IDs.
+length, random seed, intermediate output saving, and GPU float32.
 The minimum length and backend controls are on the main form. Selecting `custom`
 starts with the currently selected preset's schedule and enables editing: transform
 type, sigma, iterations, maximum optimizer evaluations, fixed/mean and moving fiber
@@ -97,7 +97,30 @@ remove scales as needed. Use `Affine` and/or `Rigid` for a linear schedule, or
 and use the aligned result as input for nonrigid registration. Nonrigid grids use
 the upstream 200 mm cube centered at RAS zero; inputs must fit that atlas space.
 `TEST` presets check execution and are not production-quality settings.
-Registration uses one GPU; the first selected CUDA device is used.
+Registration uses the GPU selected in **Compute GPU** on the main form.
+
+### GPU selection and memory
+
+All four computation pages offer **Compute GPU**. Click **Detect GPUs** to list
+CUDA devices asynchronously, or enter a nonnegative device index directly.
+Indices refer to devices visible to Slicer's Python, including any
+`CUDA_VISIBLE_DEVICES` remapping. Selection applies to registration, labeling,
+outlier removal, group registration, and atlas building. It does not select the
+GPU used by Slicer's OpenGL renderer. Opening a page does not start detection.
+Only one WMA computation can run at a time within a Slicer process.
+
+**Release unused GPU memory after each run** is enabled by default, including
+failed runs. Pipeline also releases unused allocations before anatomical mapping,
+saving, and display. **Release unused GPU memory now** performs the same cleanup
+on the selected device when WMA is idle. The status log reports released memory,
+live PyTorch tensors, and remaining allocator reservations.
+
+PyTorch keeps freed allocations in its caching allocator. Cleanup releases unused
+blocks while preserving live tensors. CUDA context and Slicer rendering memory
+can remain visible in `nvidia-smi`, even with zero PyTorch allocated/reserved bytes;
+this is expected and does not imply that WMA retains a tensor. See the official
+[CUDA memory management notes](https://docs.pytorch.org/docs/main/notes/cuda.html#memory-management)
+and [allocated-memory accounting](https://docs.pytorch.org/docs/main/generated/torch.cuda.memory.memory_allocated.html).
 
 Pairwise and Pipeline registration reuse length-filtered moving/fixed inputs
 across iterations. Input replacement, VTK geometry modification times, and length
@@ -177,6 +200,26 @@ before visualization. Pipeline saves VTP files and, when registration runs, a re
 Hemisphere mapping runs in atlas coordinates before returning results to subject
 space. The separate WMA Label From Atlas page has been removed.
 
+**Fast line display (Model nodes)** is enabled by default in Pipeline; registration
+outputs also use Model nodes. This retains every fiber and its metadata while
+avoiding FiberBundle tube/glyph setup. Uncheck it in Pipeline to use FiberBundle
+nodes when SlicerDMRI is installed. Rendering very large visible results still
+depends on graphics hardware; **Individual clusters** and **Save only** remain
+available to limit scene work.
+
+The background loader keeps VTK file reading off the GUI thread and creates MRML
+nodes on the GUI thread. Hidden inputs avoid whole-brain rendering during loading.
+Older VTK Python wrappers can still hold the interpreter lock during a large
+read, delaying Python GUI callbacks; background reading does not guarantee a
+fully responsive interface on every Slicer version.
+Inputs without a parent transform share read-only geometry during preparation,
+avoiding an unnecessary full copy. The labeling atlas is cached as one host-memory
+entry, invalidated when its directory, file size, or modification time changes.
+Selecting another atlas replaces that entry; no CUDA tensors are cached there.
+Cluster extraction shares connectivity and geometry across clusters. Anatomical
+mapping selects final tracts directly, avoiding intermediate per-cluster hemisphere
+copies; saved anatomical files use the existing parallel writer.
+
 Select the ORG atlas parent directory (for example `/data/software/ORG-Atlases`)
 or its `ORG-800FC-100HCP` labeling folder. Registration automatically uses
 `ORG-RegAtlas-100HCP/registration_atlas.vtk` under the same parent, following
@@ -192,8 +235,8 @@ labeling atlas, so unrelated sibling directories are excluded.
 
 Official ORG atlases and atlases built with this tool are supported. The complete Pipeline additionally
 requires a registration atlas, reference cluster files, and `T_*.mrml` anatomical
-mappings. The interface reports missing optional mappings. Without SlicerDMRI,
-fibers use Model nodes; with SlicerDMRI, they use FiberBundle nodes.
+mappings. The interface reports missing optional mappings. Model nodes work
+without SlicerDMRI; FiberBundle display requires SlicerDMRI.
 
 Auto selects GPU when CUDA is available, otherwise CPU accelerated. GPU requires
 CUDA PyTorch compatible with **Slicer's own Python**. Triton provides optional
@@ -293,6 +336,15 @@ MRML export, result replacement without deleting unrelated nodes, all display
 modes, empty cluster omission, and batched creation/removal of 800 hidden nodes.
 It uses a bounded synthetic subject and substitutes registration and labeling;
 hemisphere mapping, transforms, file writing, and Slicer scene operations run normally.
+
+`Testing/test_loading.py` checks byte-identical anatomical VTP output against the
+previous separate-and-append path, single-entry atlas invalidation, and real CUDA
+cleanup with live tensors. `Testing/verify_gpu_loading.py` checks threaded VTK/VTP
+reading, GUI responsiveness, full geometry preservation, selected-device execution,
+successful/failed-run cleanup, workflow locking, and Model display in native Slicer.
+`Testing/benchmark_loading.py` measures cluster and anatomical extraction with
+deterministic geometry and checks serialized output equality. It excludes disk
+reading, saving, rendering, and lazy imports from the operation timings.
 
 
 Slicer 5.2.2 on Linux was used to verify Extension Manager installation, the five current

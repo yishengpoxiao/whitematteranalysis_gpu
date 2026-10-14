@@ -129,7 +129,13 @@ class WMAAtlasBuilderWidget(ScriptedLoadableModuleWidget):
             self.outputDirectory = path
             self.outputDirectoryButton.text = path
 
+    def cleanup(self):
+        common.cleanup_controls(self)
+
     def onApply(self):
+        if common.workflow_running():
+            common.status(self, 'Another WMA workflow is running. Wait for it to finish.')
+            return
         if not self.subjectsDirectory or not self.outputDirectory:
             slicer.util.errorDisplay("Select the subject and output directories first.")
             return
@@ -137,6 +143,7 @@ class WMAAtlasBuilderWidget(ScriptedLoadableModuleWidget):
         logic = WMAAtlasBuilderLogic()
         self.applyButton.enabled = False
         try:
+            common.start_computation(self)
             result = logic.run(self.subjectsDirectory, self.outputDirectory,
                                self.fibersPerSubjectSpin.value,
                                self.clustersSpin.value,
@@ -151,6 +158,7 @@ class WMAAtlasBuilderWidget(ScriptedLoadableModuleWidget):
             import traceback
             common.status(self, "ERROR:\n" + traceback.format_exc())
         finally:
+            common.finish_computation(self)
             self.applyButton.enabled = True
 
 

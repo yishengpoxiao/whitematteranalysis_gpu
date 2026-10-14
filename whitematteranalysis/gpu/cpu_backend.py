@@ -40,7 +40,7 @@ def _tile_rows(m, points_per_fiber, dtype_bytes, threads):
 
     bytes_per_row = m * points_per_fiber * dtype_bytes * 6
     rows = int((250 * 1024 * 1024) // max(1, bytes_per_row))
-    return max(8, rows)
+    return max(1, rows)
 
 
 def _pointwise_squared_distance(q, f):
@@ -135,19 +135,23 @@ def _distance_matrix(Xn, Xm, threshold, distance_method='Hausdorff',
                 numpy.minimum(d, d_reflect, out=d)
         return d
 
-    if threads <= 1 or n <= tr:
+    if n <= tr:
         return compute(0, n)
 
-    from concurrent.futures import ThreadPoolExecutor
-    bounds = [int(x) for x in numpy.linspace(0, n, min(threads, (n + tr - 1) // tr) + 1)]
-    blocks = [(bounds[i], bounds[i + 1]) for i in range(len(bounds) - 1)
-              if bounds[i + 1] > bounds[i]]
     out = numpy.empty((n, Xm.shape[0]), dtype=numpy.float64)
-    with ThreadPoolExecutor(max_workers=len(blocks)) as pool:
-        futures = {pool.submit(compute, s, e): (s, e) for (s, e) in blocks}
-        for fut in futures:
-            s, e = futures[fut]
-            out[s:e] = fut.result()
+    workers = min(threads, (n + tr - 1) // tr)
+
+    def fill(worker):
+        for start in range(worker * tr, n, workers * tr):
+            end = min(start + tr, n)
+            out[start:end] = compute(start, end)
+
+    if workers == 1:
+        fill(0)
+    else:
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            list(pool.map(fill, range(workers)))
     return out
 
 

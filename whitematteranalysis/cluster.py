@@ -1231,6 +1231,15 @@ def mask_all_clusters(inpd, cluster_numbers_s, number_of_clusters, color=None,
     indices = labels.astype(numpy.int64)
     if numpy.any(indices[valid] >= number_of_clusters):
         raise IndexError("Cluster index exceeds number_of_clusters")
+    geometry = filter._lines_offsets_connectivity(inpd)
+    if geometry is not None:
+        order = numpy.flatnonzero(valid)
+        order = order[numpy.argsort(indices[order], kind='stable')]
+        boundaries = numpy.searchsorted(indices[order], numpy.arange(number_of_clusters + 1))
+        return [filter.mask(inpd, None, preserve_point_data=preserve_point_data,
+                            preserve_cell_data=preserve_cell_data, verbose=verbose,
+                            _geometry=geometry, _line_indices=order[boundaries[c]:boundaries[c + 1]])
+                for c in range(number_of_clusters)]
     # The original splitter ignores color and disables active cell scalars.
     return [filter.mask(inpd, valid & (indices == c),
                         preserve_point_data=preserve_point_data,

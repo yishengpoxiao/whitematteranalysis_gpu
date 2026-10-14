@@ -77,6 +77,7 @@ class WMAPipelineWidget(ScriptedLoadableModuleWidget):
         self.inputSelector.noneEnabled = False
         self.inputSelector.setMRMLScene(slicer.mrmlScene)
         form.addRow("Input tractography:", self.inputSelector)
+        self.inputLoader = common.add_tractography_loader(form, self, self.inputSelector)
 
         self.atlasDirectoryButton = qt.QPushButton("Select atlas directory...")
         self.atlasDirectoryButton.toolTip = "Select an ORG parent, ORG-800FC-100HCP, or atlas build/iteration directory."
@@ -124,6 +125,12 @@ class WMAPipelineWidget(ScriptedLoadableModuleWidget):
             "Save only (no tractography nodes)"])
         form.addRow("Result display:", self.visualizationComboBox)
 
+        self.fastDisplayCheckBox = qt.QCheckBox('Fast line display (Model nodes)')
+        self.fastDisplayCheckBox.checked = True
+        self.fastDisplayCheckBox.toolTip = ('Keeps all fibers and metadata, avoiding FiberBundle tube/glyph pipelines. '
+                                          'Uncheck to use FiberBundle nodes when SlicerDMRI is installed.')
+        form.addRow(self.fastDisplayCheckBox)
+
         self.saveCheckBox = qt.QCheckBox("Save cluster files and tractography")
         self.saveCheckBox.checked = True
         form.addRow("", self.saveCheckBox)
@@ -160,7 +167,13 @@ class WMAPipelineWidget(ScriptedLoadableModuleWidget):
             self.outputDirectory = path
             self.outputDirectoryButton.text = path
 
+    def cleanup(self):
+        common.cleanup_controls(self)
+
     def onApply(self):
+        if common.workflow_running():
+            common.status(self, 'Another WMA workflow is running. Wait for it to finish.')
+            return
         node = self.inputSelector.currentNode()
         if node is None or not self.atlasDirectory:
             return
@@ -183,6 +196,7 @@ class WMAPipelineWidget(ScriptedLoadableModuleWidget):
 
         self.applyButton.enabled = False
         try:
+            common.start_computation(self)
             import whitematteranalysis as wma
 
             transform = None
@@ -233,9 +247,10 @@ class WMAPipelineWidget(ScriptedLoadableModuleWidget):
                     common.status(self, "Outlier removal: rejected %d fibers."
                                   % rejected)
 
-            pd_c_list = _CORE.extract_clusters(
-                result['output_polydata'], result['cluster_idx'],
-                result['cluster_count'])
+            common.release_workflow_memory(self)
+            display_mode = self.visualizationComboBox.currentIndex
+            pd_c_list = (_CORE.extract_clusters(result['output_polydata'], result['cluster_idx'], result['cluster_count'])
+                         if do_save or display_mode == 1 else [])
 
             anatomical_tracts = None
             if do_anatomical:
@@ -245,10 +260,8 @@ class WMAPipelineWidget(ScriptedLoadableModuleWidget):
                 else:
                     common.status(self, "Mapping anatomical tracts...", 75)
                     callback = lambda text: common.status(self, text)
-                    sep = _CORE.separate_clusters_by_hemisphere(
-                        pd_c_list, progress_callback=callback)
-                    anatomical_tracts = _CORE.append_clusters_to_anatomical_tracts(
-                        pd_c_list, mrml_files, sep, progress_callback=callback)
+                    anatomical_tracts = _CORE.extract_anatomical_tracts(
+                        result['output_polydata'], result['cluster_idx'], mrml_files, progress_callback=callback)
                     common.status(self, "Mapped into %d anatomical tracts."
                                   % len(anatomical_tracts))
 
@@ -272,13 +285,14 @@ class WMAPipelineWidget(ScriptedLoadableModuleWidget):
                     anat_dir = os.path.join(outdir, 'anatomical_tracts')
                     if not os.path.isdir(anat_dir):
                         os.makedirs(anat_dir)
-                    for tract_name, pd_tract in anatomical_tracts:
-                        filename = os.path.join(anat_dir, tract_name + '.vtp')
-                        wma.io.write_polydata(pd_tract, filename)
+                    wma.io.write_polydatas_parallel(
+                        [pd for name, pd in anatomical_tracts],
+                        [os.path.join(anat_dir, name + '.vtp') for name, pd in anatomical_tracts])
                 common.status(self, "Saved %d cluster files and registered "
                               "tractography." % len(fnames))
 
             display_mode = self.visualizationComboBox.currentIndex
+            node_class = 'vtkMRMLModelNode' if self.fastDisplayCheckBox.checked else None
             if display_mode != 2:
                 common.status(self, "Preparing result visualization...", 95)
                 callback = lambda text: common.status(self, text)
@@ -286,19 +300,19 @@ class WMAPipelineWidget(ScriptedLoadableModuleWidget):
                     common.show_clusters_in_scene(
                         pd_c_list, base_name="pipeline", visible=False,
                         names=["cluster_%05d" % (i + 1) for i in range(len(pd_c_list))],
-                                                  progress_callback=callback)
+                                                  progress_callback=callback, node_class=node_class)
                     common.status(self, "Clusters loaded hidden; enable selected tracts in Data.")
                 elif anatomical_tracts:
                     common.show_clusters_in_scene(
                         [pd for name, pd in anatomical_tracts], base_name="pipeline",
                         names=[name for name, pd in anatomical_tracts],
-                        progress_callback=callback)
+                        progress_callback=callback, node_class=node_class)
                 else:
                     overview = result['output_polydata']
                     if transform is not None and native_space:
                         overview = _CORE.apply_transform_to_polydata(overview, transform, inverse=True)
                     common.show_clusters_in_scene([overview], base_name="pipeline",
-                                                  names=["WMA cluster overview"])
+                                                  names=["WMA cluster overview"], node_class=node_class)
                 slicer.util.resetThreeDViews()
 
             common.status(self, "PIPELINE DONE: %d fibers, %d clusters, backend %s."
@@ -308,6 +322,7 @@ class WMAPipelineWidget(ScriptedLoadableModuleWidget):
             import traceback
             common.status(self, "ERROR:\n" + traceback.format_exc())
         finally:
+            common.finish_computation(self)
             self.applyButton.enabled = True
 
 

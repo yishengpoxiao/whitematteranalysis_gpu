@@ -19,6 +19,8 @@ try:
         assert 'whitematteranalysis: OK' in widget.statusLabel.toPlainText(), name
         if name == 'WMAMergeMRML':
             assert widget._sceneObservers, 'Merge page setup did not complete'
+        if hasattr(widget, 'gpuControls'):
+            assert widget.gpuControls.process.state() == 0, 'Page setup started a GPU probe'
         timings[name] = time.perf_counter() - start
     heavy = sorted({'torch', 'scipy', 'matplotlib'} & (set(sys.modules) - before))
     if not os.environ.get('WMA_STARTUP_BASELINE'):

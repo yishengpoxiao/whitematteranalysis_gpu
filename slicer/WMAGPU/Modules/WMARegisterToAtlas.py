@@ -78,6 +78,7 @@ class WMARegisterToAtlasWidget(ScriptedLoadableModuleWidget):
         self.inputSelector.noneEnabled = False
         self.inputSelector.setMRMLScene(slicer.mrmlScene)
         form.addRow("Moving tractography:", self.inputSelector)
+        self.inputLoader = common.add_tractography_loader(form, self, self.inputSelector)
 
         self.targetComboBox = qt.QComboBox()
         self.targetComboBox.addItems(['Fixed tractography node', 'Atlas directory'])
@@ -87,6 +88,7 @@ class WMARegisterToAtlasWidget(ScriptedLoadableModuleWidget):
         self.fixedSelector.noneEnabled = True
         self.fixedSelector.setMRMLScene(slicer.mrmlScene)
         form.addRow('Fixed tractography:', self.fixedSelector)
+        self.fixedLoader = common.add_tractography_loader(form, self, self.fixedSelector, 'Load fixed tractography file...')
 
         self.atlasDirectoryButton = qt.QPushButton("Select atlas directory...")
         self.atlasDirectory = ""
@@ -128,7 +130,8 @@ class WMARegisterToAtlasWidget(ScriptedLoadableModuleWidget):
 
     def onInputChanged(self, *args):
         self.applyButton.enabled = (
-            self._CORE is not None and self.inputSelector.currentNode() is not None)
+            self._CORE is not None and self.inputSelector.currentNode() is not None
+            and not common.workflow_running() and getattr(self, '_loadingCount', 0) == 0)
 
     def onPickAtlas(self):
         path = common.pick_directory(slicer.util.mainWindow(),
@@ -147,9 +150,16 @@ class WMARegisterToAtlasWidget(ScriptedLoadableModuleWidget):
     def onTargetChanged(self, *args):
         atlas = self.targetComboBox.currentIndex == 1
         self.fixedSelector.enabled = not atlas
+        self.fixedLoader.button.enabled = not atlas
         self.atlasDirectoryButton.enabled = atlas
 
+    def cleanup(self):
+        common.cleanup_controls(self)
+
     def onApply(self):
+        if common.workflow_running():
+            common.status(self, 'Another WMA workflow is running. Wait for it to finish.')
+            return
         node = self.inputSelector.currentNode()
         fixed = self.fixedSelector.currentNode()
         use_atlas = self.targetComboBox.currentIndex == 1
@@ -164,6 +174,7 @@ class WMARegisterToAtlasWidget(ScriptedLoadableModuleWidget):
             return
         self.applyButton.enabled = False
         try:
+            common.start_computation(self)
             import whitematteranalysis as wma
             options = self.registrationOptions.arguments(self.fiberLengthSpinBox.value)
             polydata = common.world_polydata(node)
@@ -187,7 +198,7 @@ class WMARegisterToAtlasWidget(ScriptedLoadableModuleWidget):
                 output_directory=output, **options)
             name = node.GetName() + '_to_' + target_name
             self.transformNode = common.add_registration_transform(name, reg['transform'], output)
-            self.outputNode = common.add_tractography_node(node.GetName() + '_registered')
+            self.outputNode = common.add_tractography_node(node.GetName() + '_registered', 'vtkMRMLModelNode')
             self.outputNode.SetAndObservePolyData(polydata)
             self.outputNode.SetAndObserveTransformNodeID(self.transformNode.GetID())
             if output:
@@ -201,6 +212,7 @@ class WMARegisterToAtlasWidget(ScriptedLoadableModuleWidget):
             import traceback
             common.status(self, 'ERROR:\n' + traceback.format_exc())
         finally:
+            common.finish_computation(self)
             self.applyButton.enabled = True
 
 

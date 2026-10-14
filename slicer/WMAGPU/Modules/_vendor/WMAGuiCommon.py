@@ -10,6 +10,28 @@ discovery. Lives in _vendor/ so Slicer does not scan it as a module.
 import os
 import sys
 
+from WMAGPUControls import start_computation, finish_computation, release_workflow_memory
+
+
+def workflow_running():
+    from WMAGPUControls import ACTIVE_WORKFLOW
+    return ACTIVE_WORKFLOW is not None
+
+
+def add_tractography_loader(form, widget, selector, label='Load tractography file...'):
+    from WMATractographyLoader import TractographyLoader
+    loader = TractographyLoader(form, widget, selector, label)
+    if not hasattr(widget, 'tractographyLoaders'):
+        widget.tractographyLoaders = []
+    widget.tractographyLoaders.append(loader)
+    return loader
+
+
+def cleanup_controls(widget):
+    widget.gpuControls.cleanup()
+    for loader in getattr(widget, 'tractographyLoaders', []):
+        loader.cleanup()
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
@@ -84,6 +106,8 @@ def add_backend_row(form, current_widget):
         "the CPU accelerated backend is vectorized numpy (no torch).")
     form.addRow("Backend:", combo)
     current_widget.backendComboBox = combo
+    from WMAGPUControls import GPUControls
+    current_widget.gpuControls = GPUControls(form, current_widget)
     from WMATorchInstaller import add_install_row
     add_install_row(form, current_widget)
     return combo
@@ -132,9 +156,9 @@ def tractography_node_types():
     return ['vtkMRMLModelNode']
 
 
-def add_tractography_node(name):
+def add_tractography_node(name, node_class=None):
     import slicer
-    node = slicer.mrmlScene.AddNewNodeByClass(tractography_node_types()[0], name)
+    node = slicer.mrmlScene.AddNewNodeByClass(node_class or tractography_node_types()[0], name)
     node.CreateDefaultDisplayNodes()
     return node
 
@@ -143,6 +167,12 @@ def world_polydata(node):
     """Read tractography in scene RAS coordinates, including parent transforms."""
     import slicer
     import vtk
+    if node.GetPolyData() is None:
+        return None
+    if node.GetParentTransformNode() is None:
+        output = vtk.vtkPolyData()
+        output.ShallowCopy(node.GetPolyData())
+        return output
     transform = vtk.vtkGeneralTransform()
     slicer.vtkMRMLTransformNode.GetTransformBetweenNodes(node.GetParentTransformNode(), None, transform)
     return CORE.apply_transform_to_polydata(node.GetPolyData(), transform)
@@ -172,7 +202,7 @@ def add_registration_transform(name, transform, output_directory=None):
 
 def show_clusters_in_scene(pd_c_list, base_name="cluster",
                            clear_previous=True, names=None, visible=True,
-                           progress_callback=None):
+                           progress_callback=None, node_class=None):
     """Batch scene changes and skip empty tracts to avoid repeated renders."""
     import colorsys
     import slicer
@@ -195,7 +225,7 @@ def show_clusters_in_scene(pd_c_list, base_name="cluster",
             if pd_c.GetNumberOfLines() == 0:
                 continue
             name = names[c] if names is not None else "%s_%05d" % (base_name, c + 1)
-            node = add_tractography_node(name)
+            node = add_tractography_node(name, node_class=node_class)
             node.SetAttribute('WMAGPU.ResultGroup', base_name)
             node.SetDisplayVisibility(False)
             node.SetAndObservePolyData(pd_c)

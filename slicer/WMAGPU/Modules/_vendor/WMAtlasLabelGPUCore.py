@@ -19,6 +19,8 @@ import vtk
 
 from WMARegistration import registration_parameters, configure_scale
 
+_ATLAS_CACHE = None
+
 
 def resolve_backend(backend):
     """Map a friendly backend name to wma.gpu settings.
@@ -116,7 +118,13 @@ def resolve_atlas_directory(atlas_directory):
 def load_atlas(atlas_directory):
     """Load the labeling atlas resolved from a supported file or directory."""
     import whitematteranalysis as wma
-    return wma.cluster.load_atlas(resolve_atlas_directory(atlas_directory), 'atlas')
+    global _ATLAS_CACHE
+    directory = resolve_atlas_directory(atlas_directory)
+    files = [os.path.join(directory, 'atlas' + extension) for extension in ('.p', '.vtp')]
+    key = tuple((path, os.stat(path).st_mtime_ns, os.stat(path).st_size) for path in files)
+    if _ATLAS_CACHE is None or _ATLAS_CACHE[0] != key:
+        _ATLAS_CACHE = (key, wma.cluster.load_atlas(directory, 'atlas'))
+    return _ATLAS_CACHE[1]
 
 
 def run_atlas_labeling(input_polydata, atlas_directory, fiber_length_mm=40.0,
@@ -787,6 +795,83 @@ def append_clusters_to_anatomical_tracts(pd_c_list, atlas_mrml_files,
                     os.makedirs(output_directory)
                 wma.io.write_polydata(
                     pd_tract, os.path.join(output_directory, tract_name + '.vtp'))
+    return tracts
+
+
+def extract_anatomical_tracts(polydata, cluster_idx, atlas_mrml_files,
+                              hemisphere_percent_threshold=0.95, progress_callback=None):
+    """Select final tracts directly, sharing geometry and hemisphere assessment.
+
+    Preserve the legacy cluster/member order, metadata casts, and cluster_idx
+    provenance without constructing 800 clusters and 2,400 hemisphere copies.
+    """
+    import numpy
+    from vtk.util import numpy_support
+    import whitematteranalysis as wma
+
+    count = polydata.GetNumberOfLines()
+    if not count:
+        return []
+    geometry = wma.filter._lines_offsets_connectivity(polydata)
+    if geometry is None:
+        raise RuntimeError('Direct anatomical extraction requires VTK 9 connectivity arrays.')
+    offsets, connectivity, points = geometry
+    labels = numpy.asarray(cluster_idx)
+    if len(labels) != count:
+        raise ValueError('Cluster labels must match the number of tractography lines.')
+    lengths = numpy.diff(offsets)
+    location = numpy.full(count, 3, dtype=numpy.uint8)
+    for start in range(0, count, 50000):
+        end = min(start + 50000, count)
+        positions = numpy.rint(numpy.arange(20) * ((lengths[start:end] - 1.) / 19.)[:, None]).astype(numpy.int64)
+        ids = connectivity[offsets[start:end, None] + positions]
+        # Legacy cluster extraction casts points to float32 before assessment.
+        fraction_left = (points[ids, 0].astype(numpy.float32) < 0).sum(axis=1) / 20.
+        location[start:end][fraction_left > hemisphere_percent_threshold] = 1
+        location[start:end][fraction_left < 1 - hemisphere_percent_threshold] = 2
+
+    order = numpy.argsort(labels, kind='stable')
+    ids, starts = numpy.unique(labels[order], return_index=True)
+    groups = {int(c): indices for c, indices in zip(ids, numpy.split(order, starts[1:]))}
+    empty = numpy.empty(0, dtype=numpy.int64)
+    tracts = []
+    for i, path in enumerate(atlas_mrml_files):
+        if progress_callback:
+            progress_callback('Mapping anatomical tract %d/%d: %s' % (i + 1, len(atlas_mrml_files), os.path.basename(path)))
+        name = os.path.splitext(os.path.basename(path))[0]
+        members = sorted(int(filename[8:13]) for filename in _parse_tract_mrml_members(path))
+        member_positions = {number: position for position, number in enumerate(members)}
+        sides = [(name, 3)] if name.startswith(('T_CC', 'T_MCP')) else [(name + '_left', 1), (name + '_right', 2)]
+        for tract_name, side in sides:
+            selected, provenance = [], []
+            for number in members:
+                indices = groups.get(number - 1, empty)
+                indices = indices[location[indices] == side]
+                if len(indices):
+                    selected.append(indices)
+                    # Repeated members share their last assigned index in the legacy appender.
+                    provenance.append(numpy.full(len(indices), member_positions[number], dtype=numpy.int32))
+            if not selected:
+                continue
+            indices = numpy.concatenate(selected)
+            tract = wma.filter.mask(polydata, None, preserve_point_data=True, preserve_cell_data=True,
+                                    verbose=False, _geometry=geometry, _line_indices=indices)
+            values = numpy.repeat(numpy.concatenate(provenance), lengths[indices])
+            array = numpy_support.numpy_to_vtk(values, deep=True)
+            array.SetName('cluster_idx')
+            tract.GetPointData().AddArray(array)
+            if len(selected) > 1:
+                # vtkAppendPolyData orders merged attribute fields by name.
+                for attributes in (tract.GetPointData(), tract.GetCellData()):
+                    arrays = [attributes.GetAbstractArray(index) for index in range(attributes.GetNumberOfArrays())]
+                    tensors = attributes.GetTensors()
+                    tensor_name = tensors.GetName() if tensors is not None else None
+                    attributes.Initialize()
+                    for item in sorted(arrays, key=lambda item: item.GetName() or ''):
+                        attributes.AddArray(item)
+                    if tensor_name:
+                        attributes.SetActiveTensors(tensor_name)
+            tracts.append((tract_name, tract))
     return tracts
 
 

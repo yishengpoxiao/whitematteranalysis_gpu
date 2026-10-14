@@ -389,7 +389,8 @@ def downsample(inpd, output_number_of_lines, return_indices=False, preserve_poin
         return outpd
 
 
-def mask(inpd, fiber_mask, color=None, preserve_point_data=False, preserve_cell_data=True, verbose=True):
+def mask(inpd, fiber_mask, color=None, preserve_point_data=False, preserve_cell_data=True, verbose=True,
+         _geometry=None, _line_indices=None):
     """ Keep lines and their points where fiber_mask == 1.
 
      Unlike vtkMaskPolyData that samples every nth cell, this function
@@ -515,11 +516,12 @@ def mask(inpd, fiber_mask, color=None, preserve_point_data=False, preserve_cell_
     # Produces the same output polydata as the per-line loop below:
     # points are re-inserted in kept-line order and cast to float32
     # (vtkPoints default), tuples are cast to the same output array types.
-    fast = _lines_offsets_connectivity(inpd)
+    fast = _geometry if _geometry is not None else _lines_offsets_connectivity(inpd)
     if fast is not None:
         from vtk.util import numpy_support
         offsets, conn, in_points = fast
-        keep_indices = numpy.nonzero(numpy.asarray(fiber_mask) != 0)[0]
+        keep_indices = (numpy.asarray(_line_indices, dtype=numpy.int64) if _line_indices is not None
+                        else numpy.nonzero(numpy.asarray(fiber_mask) != 0)[0])
 
         # the original loop re-inserts every point of every kept line,
         # so output points are consecutive: the output connectivity is
@@ -590,6 +592,9 @@ def mask(inpd, fiber_mask, color=None, preserve_point_data=False, preserve_cell_
         if verbose:
             print(f"<{os.path.basename(__file__)}> Fibers sampled:", outpd.GetNumberOfLines(), "/", inpd.GetNumberOfLines())
         return outpd
+
+    if _line_indices is not None:
+        raise RuntimeError('Indexed fiber selection requires VTK 9 connectivity arrays.')
 
     # loop over lines
     inpd.GetLines().InitTraversal()

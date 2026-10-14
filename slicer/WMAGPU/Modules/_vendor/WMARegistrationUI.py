@@ -54,10 +54,6 @@ class RegistrationOptions:
         layout.addRow(self.verbose)
         self.float32 = qt.QCheckBox('GPU float32 (may change near-tie results)')
         layout.addRow(self.float32)
-        self.devices = qt.QLineEdit()
-        self.devices.placeholderText = 'Default visible devices; e.g. 0 or 0,1'
-        self.devices.toolTip = 'Registration uses one CUDA device; the first selected device is used.'
-        layout.addRow('CUDA device IDs:', self.devices)
         form.addRow(self.advanced)
         self.method.connect('currentIndexChanged(int)', self.onMethodChanged)
         self.add.connect('clicked(bool)', self.addScale)
@@ -110,15 +106,7 @@ class RegistrationOptions:
                     raise ValueError('%s must contain integers.' % field)
                 params[field] = [int(v) for v in params[field]]
         registration_parameters(method, params, self.groupwise)
-        text = self.devices.text.strip()
-        try:
-            devices = [int(v) for v in text.replace(',', ' ').split()] if text else None
-        except ValueError:
-            raise ValueError('CUDA device IDs must be nonnegative integers separated by commas.')
-        if devices and any(v < 0 for v in devices):
-            raise ValueError('CUDA device IDs must be nonnegative integers.')
         import whitematteranalysis as wma
         wma.gpu.set_float32(self.float32.checked)
-        wma.gpu.set_devices(devices)
         return dict(mode=method, params=params, fiber_length_max_mm=self.maximumLength.value,
                     random_seed=self.seed.value, verbose=self.verbose.checked)
