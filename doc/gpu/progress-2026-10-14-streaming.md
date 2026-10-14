@@ -59,6 +59,12 @@ bundles the updated WMA source and retains its date-free filename.
   Transform loads decrease from 65 to one; added scene nodes decrease from 649
   to zero. Small affine hardening timings are essentially unchanged, so these
   checks establish bounded scene lifetime rather than a full-stage speedup.
+- On 2026-10-15, the rebuilt universal installer successfully installs source
+  revision `aa08949` in an isolated native Slicer environment. A fresh process
+  discovers all five pages, labels with CPU/CUDA, performs bounded registration,
+  and passes four installed-core tests. All 28 bundled WMA Python files match
+  repository and installed source bytes. Existing dependencies are reused; this
+  check downloads no optional PyTorch package.
 
 ## CPU measurements
 
