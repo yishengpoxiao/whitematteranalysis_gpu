@@ -411,8 +411,8 @@ class FiberArray:
         except AttributeError:
             return False
 
-        offsets = numpy_support.vtk_to_numpy(offsets_array).astype(numpy.int64)
-        conn = numpy_support.vtk_to_numpy(conn_array).astype(numpy.int64)
+        offsets = numpy_support.vtk_to_numpy(offsets_array).astype(numpy.int64, copy=False)
+        conn = numpy_support.vtk_to_numpy(conn_array).astype(numpy.int64, copy=False)
         points = numpy_support.vtk_to_numpy(input_vtk_polydata.GetPoints().GetData())
 
         number_of_lines = len(offsets) - 1
@@ -440,14 +440,9 @@ class FiberArray:
         global_ids = conn[offsets[:-1][:, numpy.newaxis] + local_ids]
 
         pts = points[global_ids]  # (n, P, 3) float32, exact upcast below
-        coords = numpy.zeros((self.number_of_fibers, P, 3), dtype=numpy.float64)
-        coords[:, :, 0] = pts[:, :, 0]
-        coords[:, :, 1] = pts[:, :, 1]
-        coords[:, :, 2] = pts[:, :, 2]
-
-        self.fiber_array_r = numpy.ascontiguousarray(coords[:, :, 0])
-        self.fiber_array_a = numpy.ascontiguousarray(coords[:, :, 1])
-        self.fiber_array_s = numpy.ascontiguousarray(coords[:, :, 2])
+        self.fiber_array_r[:] = pts[:, :, 0]
+        self.fiber_array_a[:] = pts[:, :, 1]
+        self.fiber_array_s[:] = pts[:, :, 2]
         return True
             
     def calculate_hemispheres(self):

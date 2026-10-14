@@ -365,6 +365,10 @@ including without Triton. With Triton, affine registration reuses a fused transf
 and matrix/coordinate buffers. See the [GPU continuation record](../../doc/gpu/progress-2026-10-15-gpu.md)
 for real-subject classification and bounded registration comparisons.
 
+Geometry preparation also avoids full tractogram copies, and large CPU distance
+tiles use SciPy's compiled kernel. See the [geometry/CPU record](../../doc/gpu/progress-2026-10-15-geometry-cpu.md)
+for numerical validation and timings.
+
 
 Slicer 5.2.2 on Linux was used to verify Extension Manager installation, the five current
 modules, node selection without SlicerDMRI, CPU/GPU labeling agreement, affine

@@ -6,13 +6,12 @@ Vectorized, multi-threaded CPU backend for the whitematteranalysis
 fiber distance computations. This is the "CPU accelerated" option that
 runs everywhere numpy runs (no torch needed, e.g. inside 3D Slicer).
 
-It computes exactly the same numbers as the original per-fiber joblib
-code in similarity.py/cluster.py - every element is produced by the
-same numpy operations (elementwise diff/square, pairwise reduction over
-the fiber points, threshold clamp, forward/reversed minimum, bilateral
-minimum) - only the loop structure is tiled so whole blocks of query
-fibers are computed at once. Row tiles are independent, so results do
-not depend on the number of threads.
+It preserves the original per-fiber arithmetic and point reduction order
+in similarity.py/cluster.py. Large float64 tiles use SciPy's compiled
+three-coordinate squared distances; smaller tiles use NumPy. Threshold
+clamping, orientation/bilateral comparisons and point reductions retain
+their original operations. Row tiles are independent, so results do not
+depend on the number of threads.
 
 """
 
@@ -42,7 +41,7 @@ def _tile_rows(m, points_per_fiber, dtype_bytes, threads):
     """Keep distance temporaries small enough for CPU cache reuse."""
 
     bytes_per_row = m * points_per_fiber * dtype_bytes * 6
-    budget = (1 if threads == 1 else 8) * 1024 * 1024
+    budget = (32 if threads == 1 else 16) * 1024 * 1024
     return max(1, int(budget // max(1, bytes_per_row)))
 
 
@@ -50,6 +49,15 @@ def _pointwise_squared_distance(q, f):
     """(b, P, 3) queries vs (m, P, 3) fixed -> (b, m, P) squared
     distances, with the exact operation order of
     similarity._fiber_distance_internal_use."""
+
+    if (q.dtype == f.dtype == numpy.float64 and len(q) * len(f) >= 4096):
+        # Compiled 3D distances fuse component differences/squares/additions.
+        # Restore a contiguous point axis for the original NumPy reduction.
+        from scipy.spatial.distance import cdist
+        points = numpy.empty((q.shape[1], len(q), len(f)), dtype=numpy.float64)
+        for point in range(q.shape[1]):
+            cdist(q[:, point], f[:, point], metric='sqeuclidean', out=points[point])
+        return points.transpose(1, 2, 0).copy()
 
     qx = q[:, :, 0][:, None, :]
     qy = q[:, :, 1][:, None, :]

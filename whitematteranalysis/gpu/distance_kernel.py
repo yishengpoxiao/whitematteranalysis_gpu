@@ -59,9 +59,10 @@ def fiber_distances(queries, fixed, threshold, method):
     output = torch.empty(shape, dtype=fixed.dtype, device=fixed.device)
     points = fixed.shape[1]
     steps = points.bit_length() - 1
+    block = 64 if points <= 16 else 32
     with torch.cuda.device(fixed.device):
-        _distances[(triton.cdiv(output.numel(), 32),)](
+        _distances[(triton.cdiv(output.numel(), block),)](
             fixed, queries, output, shape[1], output.numel(),
             P=points, WIDTH=1 << steps, STEPS=steps, THRESHOLD2=threshold * threshold,
-            METHOD=method, BLOCK=32, enable_fp_fusion=False)
+            METHOD=method, BLOCK=block, num_warps=1, enable_fp_fusion=False)
     return output

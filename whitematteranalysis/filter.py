@@ -40,18 +40,17 @@ verbose = 0
 def _lines_offsets_connectivity(inpd):
     """Fast access to the line structure of a polydata (VTK >= 9).
 
-    Returns (offsets, connectivity, points) as numpy arrays, or None
+    Returns (offsets, connectivity, native points) views for reading, or None
     when the VTK connectivity API is unavailable.
     """
 
     try:
         from vtk.util import numpy_support
         lines = inpd.GetLines()
-        offsets = numpy_support.vtk_to_numpy(lines.GetOffsetsArray()).astype(numpy.int64)
-        conn = numpy_support.vtk_to_numpy(lines.GetConnectivityArray()).astype(numpy.int64)
-        # float64: callers do arithmetic that must match GetPoint()-based
-        # double arithmetic in the original loops
-        points = numpy_support.vtk_to_numpy(inpd.GetPoints().GetData()).astype(numpy.float64)
+        offsets = numpy_support.vtk_to_numpy(lines.GetOffsetsArray()).astype(numpy.int64, copy=False)
+        conn = numpy_support.vtk_to_numpy(lines.GetConnectivityArray()).astype(numpy.int64, copy=False)
+        # Arithmetic callers upcast only the coordinates they actually use.
+        points = numpy_support.vtk_to_numpy(inpd.GetPoints().GetData())
         return offsets, conn, points
     except (AttributeError, ImportError):
         return None
@@ -60,8 +59,8 @@ def _lines_offsets_connectivity(inpd):
 def _gather_conn(conn, offsets, keep_indices):
     """Connectivity array of the selected lines, preserving order."""
 
-    lengths = (offsets[1:] - offsets[:-1])[keep_indices]
     starts = offsets[:-1][keep_indices]
+    lengths = offsets[1:][keep_indices] - starts
     total = int(lengths.sum())
     if total == 0:
         return numpy.zeros(0, dtype=numpy.int64), numpy.zeros(keep_indices.size + 1, dtype=numpy.int64)
@@ -170,8 +169,8 @@ def compute_lengths(inpd):
         c = candidates[0]
         # interior segments (ptidx, ptidx+1) for ptidx in 1..n-2, as in the
         # original loop; (p0-p1)**2 is identical to (p1-p0)**2
-        seg0 = points[conn[offsets[c] + 1:offsets[c + 1] - 1]]
-        seg1 = points[conn[offsets[c] + 2:offsets[c + 1]]]
+        seg0 = points[conn[offsets[c] + 1:offsets[c + 1] - 1]].astype(numpy.float64, copy=False)
+        seg1 = points[conn[offsets[c] + 2:offsets[c + 1]]].astype(numpy.float64, copy=False)
         seg_sq = numpy.power(numpy.subtract(seg0, seg1), 2)
         seg_dists = numpy.sqrt(numpy.sum(seg_sq, axis=1))
         # sequential accumulation (cumsum) matches the += loop bitwise
@@ -277,8 +276,8 @@ def preprocess(inpd, min_length_mm,
         if max_length_mm is not None:
             keep &= ~(line_lengths.astype(numpy.float64) * step_size > max_length_mm)
         if remove_u | remove_brainstem:
-            point0 = points[conn[offsets[:-1]]]
-            point1 = points[conn[offsets[1:] - 1]]
+            point0 = points[conn[offsets[:-1]]].astype(numpy.float64, copy=False)
+            point1 = points[conn[offsets[1:] - 1]].astype(numpy.float64, copy=False)
             if remove_u:
                 endpoint_dist = numpy.sqrt(
                     numpy.sum(numpy.power(numpy.subtract(point0, point1), 2), axis=1))
@@ -532,7 +531,7 @@ def mask(inpd, fiber_mask, color=None, preserve_point_data=False, preserve_cell_
         out_conn = numpy.arange(total, dtype=numpy.int64)
 
         # points: only those referenced by kept lines, in output order
-        out_points_arr = in_points[src_conn].astype(numpy.float32)
+        out_points_arr = in_points[src_conn].astype(numpy.float32, copy=False)
         outpoints.SetData(numpy_support.numpy_to_vtk(out_points_arr, deep=True))
 
         # lines
@@ -552,13 +551,13 @@ def mask(inpd, fiber_mask, color=None, preserve_point_data=False, preserve_cell_
                 values = full[keep_indices]
                 dtype = array.GetDataType()
                 if dtype == 10:
-                    values = values.astype(numpy.float32)
+                    values = values.astype(numpy.float32, copy=False)
                 elif dtype == 6:
-                    values = values.astype(numpy.int32)
+                    values = values.astype(numpy.int32, copy=False)
                 elif dtype == 3:
-                    values = values.astype(numpy.uint8)
+                    values = values.astype(numpy.uint8, copy=False)
                 else:
-                    values = values.astype(numpy.float32)
+                    values = values.astype(numpy.float32, copy=False)
                 out_array = numpy_support.numpy_to_vtk(
                     numpy.ascontiguousarray(values), deep=True)
                 out_array.SetName(array.GetName())
@@ -569,7 +568,7 @@ def mask(inpd, fiber_mask, color=None, preserve_point_data=False, preserve_cell_
             for idx in range(inpointdata.GetNumberOfArrays()):
                 array = inpointdata.GetArray(idx)
                 full = numpy_support.vtk_to_numpy(array)
-                values = full[src_conn].astype(numpy.float32)
+                values = full[src_conn].astype(numpy.float32, copy=False)
                 out_array = numpy_support.numpy_to_vtk(
                     numpy.ascontiguousarray(values), deep=True)
                 out_array.SetName(array.GetName())

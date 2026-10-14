@@ -17,6 +17,21 @@ def fiber_array(values):
 
 
 class CPUTilingTests(unittest.TestCase):
+    def test_compiled_and_small_tiles_match_original(self):
+        rng = np.random.RandomState(23)
+        for points in (1, 2, 3, 7, 10, 15, 20, 31, 50):
+            queries, fixed = rng.normal(size=(37, points, 3)), rng.normal(size=(257, points, 3))
+            reference, moving = fiber_array(fixed), fiber_array(queries)
+            for method in ('Mean', 'MeanSquared', 'Hausdorff', 'StrictSimilarity'):
+                for bilateral in (False, True):
+                    expected = np.array([wma.similarity.fiber_distance(moving.get_fiber(i), reference,
+                        threshold=.1, distance_method=method, sigmasq=6400, bilateral=bilateral)
+                        for i in range(37)])
+                    for workers in (1, 4):
+                        actual = cpu._distance_matrix(queries, fixed, .1, method, bilateral,
+                            tile_rows=16, number_of_jobs=workers)
+                        np.testing.assert_array_equal(actual, expected)
+
     def test_joblib_worker_counts(self):
         from joblib import effective_n_jobs
         for requested in (1, 4, -1, -2):

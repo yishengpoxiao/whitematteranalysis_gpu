@@ -64,6 +64,10 @@ GPU labeling keeps normalization and nearest-centroid selection on CUDA, and
 affine registration reuses a fused transform when Triton is available. See the
 [latest GPU measurements](doc/gpu/progress-2026-10-15-gpu.md).
 
+Geometry preparation avoids full tractogram copies, and CPU distance tiles use
+SciPy's compiled kernel where beneficial. See the
+[geometry and CPU measurements](doc/gpu/progress-2026-10-15-geometry-cpu.md).
+
 ## 3D Slicer extension
 
 Use the [universal installer](slicer/WMAGPU/dist/WMAGPU-Installer.zip).
