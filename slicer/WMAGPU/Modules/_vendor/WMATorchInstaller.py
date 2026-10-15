@@ -3,24 +3,44 @@ import os
 import platform
 import sys
 
-TORCH_INDEX = 'https://download.pytorch.org/whl/cu121'
-TORCH_PACKAGE = 'torch==2.4.1+cu121'
 PROBE = ("import torch; print('PyTorch:', torch.__version__); "
          "print('CUDA available:', torch.cuda.is_available()); "
          "raise SystemExit(0 if torch.cuda.is_available() else 2)")
 ACTIVE_INSTALLER = None
 
 
-def installation_arguments():
+def cuda_profiles():
+    profiles = {}
+    if (3, 8) <= sys.version_info[:2] <= (3, 12):
+        profiles.update(dict.fromkeys(('cu118', 'cu121', 'cu124'), '2.4.1'))
+    if (3, 10) <= sys.version_info[:2] <= (3, 14):
+        profiles.update(dict.fromkeys(('cu126', 'cu128', 'cu130'), '2.10.0'))
+    return profiles
+
+
+def installation_arguments(cuda='auto'):
     if not (sys.platform.startswith('linux') or sys.platform == 'win32') or platform.machine().lower() not in ('x86_64', 'amd64'):
         raise RuntimeError('Automatic CUDA installation supports Linux/Windows x86_64 only. Use CPU accelerated.')
     if not (3, 8) <= sys.version_info[:2] <= (3, 14):
         raise RuntimeError('This CUDA PyTorch installer supports Slicer Python 3.8–3.14. Use CPU accelerated.')
-    package, index = TORCH_PACKAGE, TORCH_INDEX
-    if sys.version_info[:2] >= (3, 10):
-        package, index = 'torch==2.10.0', 'https://download.pytorch.org/whl/cu126'
+    if cuda == 'auto':
+        cuda = 'cu126' if sys.version_info[:2] >= (3, 10) else 'cu121'
+    profiles = cuda_profiles()
+    if cuda not in profiles:
+        raise RuntimeError('The selected CUDA build has no installation profile for this Slicer Python.')
+    package, index = 'torch==' + profiles[cuda], 'https://download.pytorch.org/whl/' + cuda
     return ['-m', 'pip', 'install', '--disable-pip-version-check', '--no-input',
-            '--progress-bar', 'off', package, '--index-url', index]
+            '--progress-bar', 'off', '--only-binary=:all:', package, '--index-url', index]
+
+
+def cuda_profile_selector():
+    import qt
+    selector = qt.QComboBox()
+    selector.addItem('Auto (Slicer Python default)', 'auto')
+    for profile in cuda_profiles():
+        selector.addItem('CUDA %s.%s' % (profile[2:-1], profile[-1]), profile)
+    selector.toolTip = 'Select a PyTorch CUDA build supported by your NVIDIA driver. Existing working CUDA PyTorch is reused.'
+    return selector
 
 
 def python_slicer():
@@ -33,10 +53,12 @@ def python_slicer():
 
 
 class TorchInstaller:
-    def __init__(self, allow, button, log):
+    def __init__(self, allow, button, log, profile):
         import qt
         import slicer
         self.allow, self.button, self.log = allow, button, log
+        self.profile = profile
+        self.profile.enabled = allow.checked
         self.process = qt.QProcess(slicer.app)
         self.process.setProcessChannelMode(qt.QProcess.MergedChannels)
         self.process.connect('readyReadStandardOutput()', self.read_output)
@@ -48,6 +70,7 @@ class TorchInstaller:
 
     def toggle(self, checked):
         self.button.enabled = checked and self.phase is None
+        self.profile.enabled = checked and self.phase is None
 
     def read_output(self):
         output = self.process.readAllStandardOutput().data().decode('utf-8', errors='replace')
@@ -66,13 +89,13 @@ class TorchInstaller:
             self.log.appendPlainText('Another WMA PyTorch installation is running. Wait for it to finish.')
             return
         try:
-            self.arguments = installation_arguments()
             self.executable = python_slicer()
         except RuntimeError as exc:
             self.log.appendPlainText(str(exc))
             return
         ACTIVE_INSTALLER = self
         self.allow.enabled = self.button.enabled = False
+        self.profile.enabled = False
         self.log.appendPlainText('Checking CUDA in Slicer Python: ' + self.executable)
         self.launch('check', ['-c', PROBE])
 
@@ -85,6 +108,11 @@ class TorchInstaller:
             if exit_code == 0:
                 self.complete('CUDA PyTorch is already available. No packages changed.')
             else:
+                try:
+                    self.arguments = installation_arguments(self.profile.itemData(self.profile.currentIndex))
+                except RuntimeError as exc:
+                    self.complete(str(exc))
+                    return
                 self.log.appendPlainText('Installing CUDA PyTorch. Download may take several minutes.\n' +
                                          ' '.join(self.arguments))
                 self.launch('install', self.arguments)
@@ -111,6 +139,7 @@ class TorchInstaller:
         ACTIVE_INSTALLER = None
         self.allow.enabled = True
         self.button.enabled = self.allow.checked
+        self.profile.enabled = self.allow.checked
 
 
 def add_install_row(form, widget):
@@ -123,7 +152,9 @@ def add_install_row(form, widget):
     log.readOnly = True
     log.maximumHeight = 120
     log.setPlainText('Optional GPU setup: enable the checkbox, then click Check / Install. CPU needs no PyTorch.')
+    profile = cuda_profile_selector()
     form.addRow('', allow)
+    form.addRow('CUDA build:', profile)
     form.addRow('', button)
     form.addRow('PyTorch setup:', log)
-    widget.torchInstaller = TorchInstaller(allow, button, log)
+    widget.torchInstaller = TorchInstaller(allow, button, log, profile)

@@ -22,18 +22,21 @@ Choose one dependency profile in the same Python environment:
 # CPU: base dependencies, no PyTorch required
 python -m pip install -r requirements_cpu.txt
 
-# GPU: all CPU dependencies plus CUDA 12.1 / PyTorch 2.4.1
+# GPU: install a CUDA-enabled PyTorch build first, then the remaining dependencies
 python -m pip install -r requirements_gpu.txt
 python -c "import torch; print(torch.__version__, torch.cuda.is_available())"
 ```
 
 `python -m pip install .` installs the current CPU profile, including
 `threadpoolctl` for scoped BLAS control. The GPU profile includes the CPU profile
-and the official CUDA wheel index. Only the latest CPU/GPU profiles are retained.
+and `torch>=2.4.1`, without fixing a CUDA wheel index or exact PyTorch release.
+Existing compatible PyTorch installations are reused.
 
-The GPU profile targets Linux/Windows x86_64 and Python 3.8–3.12 and uses the
-[official PyTorch CUDA 12.1 index](https://docs.pytorch.org/get-started/previous-versions/#v241).
-GPU execution requires a working NVIDIA GPU/driver. Triton kernels are used when
+Install the CUDA-enabled PyTorch build matching your Python, GPU and NVIDIA
+driver using the [official PyTorch selector](https://pytorch.org/get-started/locally/)
+or [version-specific commands](https://pytorch.org/get-started/previous-versions/).
+WMA is not restricted to CUDA 12.1. A CPU-only PyTorch build cannot run CUDA;
+check `torch.cuda.is_available()` after installation. Triton kernels are used when
 Triton is available; the torch CUDA path remains available without Triton.
 Linux / Python 3.8 and Slicer 5.2.2 / Python 3.9 were tested; Windows has not been tested.
 

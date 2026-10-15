@@ -25,6 +25,7 @@ try:
         installer = namespace['show_installer']()
         assert installer.version == '%d.%d' % (slicer.app.majorVersion, slicer.app.minorVersion)
         assert not installer.gpu.checked
+        assert not installer.cuda_profile.enabled and installer.cuda_profile.count >= 4
 
         def wait():
             deadline = time.monotonic() + 60
@@ -45,6 +46,7 @@ try:
         assert 'Setup failed' in installer.log.toPlainText()
         assert not manager.isExtensionInstalled('WMAGPU')
         installer.gpu.checked = True
+        installer.cuda_profile.currentIndex = installer.cuda_profile.findData('cu118')
         helper = sys.modules['_WMAGPUInstallTorch']
         # Optional CUDA path must never download packages in this test.
         with patch.object(helper, 'PROBE', "print('CUDA available: True')"), patch.object(
@@ -55,6 +57,7 @@ try:
         assert 'WMA_DEPENDENCIES_OK' in log, log
         assert 'WMAGPU installed successfully' in log, log
         assert 'CUDA PyTorch is already available' in log, log
+        assert installer.gpu_installer.profile is installer.cuda_profile
         assert manager.isExtensionInstalled('WMAGPU')
         modules = Path(manager.extensionInstallPath('WMAGPU')) / (
             'lib/Slicer-%s/qt-scripted-modules' % installer.version)

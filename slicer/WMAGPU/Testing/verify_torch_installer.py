@@ -12,6 +12,7 @@ try:
         widget = slicer.util.getModule(name).widgetRepresentation().self()
         installer = widget.torchInstaller
         assert not installer.allow.checked and not installer.button.enabled
+        assert not installer.profile.enabled and installer.profile.count >= 4
         installer.start()
         assert installer.phase is None
         widgets.append(widget)
@@ -29,8 +30,10 @@ try:
 
     instance.allow.checked = True
     assert instance.button.enabled
+    instance.profile.currentIndex = instance.profile.findData('cu124')
+    assert instance.profile.enabled
     # Existing GPU PyTorch must be left intact, with a real fresh-process probe.
-    with patch.object(setup, 'installation_arguments', return_value=['-c', 'raise SystemExit(91)']):
+    with patch.object(setup, 'installation_arguments', side_effect=AssertionError('Existing CUDA must be reused')):
         instance.start()
         assert not instance.allow.enabled, instance.log.toPlainText()
         wait()
@@ -48,13 +51,15 @@ try:
         real_launch(phase, arguments)
 
     with patch.object(instance, 'launch', side_effect=launch), patch.object(
-            setup, 'installation_arguments', return_value=['-c', "print('SIMULATED_PIP_LOG')"]):
+            setup, 'installation_arguments', return_value=['-c', "print('SIMULATED_PIP_LOG')"]) as arguments:
         instance.start()
         other = widgets[1].torchInstaller
         other.allow.checked = True
         other.start()
         assert 'Another WMA' in other.log.toPlainText()
         wait()
+        arguments.assert_called_once_with('cu124')
+    assert instance.profile.enabled
     assert [phase for phase, _ in launches] == ['check', 'install', 'verify']
     assert 'SIMULATED_PIP_LOG' in instance.log.toPlainText()
     assert 'Restart Slicer before using GPU' in instance.log.toPlainText()

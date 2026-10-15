@@ -42,7 +42,7 @@ class Installer:
     def __init__(self):
         import qt
         import slicer
-        from _WMAGPUInstallTorch import installation_arguments, python_slicer
+        from _WMAGPUInstallTorch import installation_arguments, python_slicer, cuda_profile_selector
         self.slicer = slicer
         self.version = runtime_version(slicer.app.majorVersion, slicer.app.minorVersion, sys.version_info)
         self.executable = python_slicer()
@@ -71,6 +71,10 @@ class Installer:
             layout.addWidget(qt.QLabel('CPU mode: ' + str(exc)))
         self.gpu_supported = self.gpu.enabled
         layout.addWidget(self.gpu)
+        self.cuda_profile = cuda_profile_selector()
+        self.cuda_profile.enabled = False
+        self.gpu.connect('toggled(bool)', self.cuda_profile.setEnabled)
+        layout.addWidget(self.cuda_profile)
         self.button = qt.QPushButton('Install WMAGPU and required dependencies')
         self.button.connect('clicked(bool)', self.start)
         layout.addWidget(self.button)
@@ -96,6 +100,7 @@ class Installer:
             if self.slicer.app.extensionsManagerModel().isExtensionInstalled('WMAGPU'):
                 raise RuntimeError('WMAGPU is already installed. Remove it in Extensions Manager, restart Slicer, then rerun this installer.')
             self.button.enabled = self.gpu.enabled = False
+            self.cuda_profile.enabled = False
             self.dialog.show()
             self.log.appendPlainText('Checking/installing dependencies in: ' + self.executable)
             self.launch('dependencies', ['--install'])
@@ -135,7 +140,7 @@ class Installer:
                     allow.hide()
                     button = qt.QPushButton(self.dialog)
                     button.hide()
-                    self.gpu_installer = TorchInstaller(allow, button, self.log)
+                    self.gpu_installer = TorchInstaller(allow, button, self.log, self.cuda_profile)
                     self.gpu_installer.start()
             except Exception as exc:
                 self.complete(str(exc))
@@ -150,6 +155,7 @@ class Installer:
         self.log.appendPlainText(message)
         self.button.enabled = True
         self.gpu.enabled = self.gpu_supported
+        self.cuda_profile.enabled = self.gpu.checked and self.gpu_supported
 
 
 def show_installer():

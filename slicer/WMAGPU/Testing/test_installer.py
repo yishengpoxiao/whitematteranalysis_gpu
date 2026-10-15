@@ -97,10 +97,20 @@ class InstallerTests(unittest.TestCase):
             with patch.object(torch_setup.sys, 'platform', operating_system), patch.object(
                     torch_setup.platform, 'machine', return_value=machine):
                 with patch.object(torch_setup.sys, 'version_info', (3, 9)):
-                    self.assertIn('torch==2.4.1+cu121', torch_setup.installation_arguments())
+                    self.assertIn('torch==2.4.1', torch_setup.installation_arguments())
+                    self.assertEqual(set(torch_setup.cuda_profiles()), {'cu118', 'cu121', 'cu124'})
                 with patch.object(torch_setup.sys, 'version_info', (3, 12)):
                     self.assertIn('torch==2.10.0', torch_setup.installation_arguments())
                     self.assertIn('https://download.pytorch.org/whl/cu126', torch_setup.installation_arguments())
+                    self.assertEqual(len(torch_setup.cuda_profiles()), 6)
+                for python in ((3, 8), (3, 9), (3, 10), (3, 12), (3, 13), (3, 14)):
+                    with patch.object(torch_setup.sys, 'version_info', python):
+                        for cuda, version in torch_setup.cuda_profiles().items():
+                            arguments = torch_setup.installation_arguments(cuda)
+                            self.assertIn('torch==' + version, arguments)
+                            self.assertIn('https://download.pytorch.org/whl/' + cuda, arguments)
+                        with self.assertRaisesRegex(RuntimeError, 'no installation profile'):
+                            torch_setup.installation_arguments('cu999')
         for operating_system, machine in (('darwin', 'arm64'), ('darwin', 'x86_64'), ('linux', 'aarch64'), ('win32', 'ARM64')):
             with patch.object(torch_setup.sys, 'platform', operating_system), patch.object(
                     torch_setup.platform, 'machine', return_value=machine):

@@ -1,5 +1,4 @@
-# Complete GPU profile: base dependencies plus validated CUDA PyTorch.
-# Linux/Windows x86_64, Python 3.8-3.12; requires a compatible NVIDIA driver.
+# Install the CUDA-enabled PyTorch build appropriate for your driver first.
+# Existing compatible PyTorch installations are reused, regardless of CUDA version.
 -r requirements_cpu.txt
---extra-index-url https://download.pytorch.org/whl/cu121
-torch==2.4.1+cu121
+torch>=2.4.1

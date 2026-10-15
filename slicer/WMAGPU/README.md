@@ -148,10 +148,17 @@ remain visible in `nvidia-smi` even when PyTorch tensor allocations are zero.
 Enable **Allow downloading and installing CUDA PyTorch into Slicer**, then click
 **Check / Install PyTorch**. A background subprocess checks Slicer's own Python;
 Conda PyTorch does not enable Slicer CUDA. Existing working CUDA PyTorch is reused.
-Otherwise the installer chooses `torch==2.4.1+cu121` for Python 3.8–3.9, or
-`torch==2.10.0` from the CUDA 12.6 index for Python 3.10–3.14, then verifies CUDA
-in a fresh process. The 2.4.1 profile is validated; the newer profile requires
-native validation. Triton is optional and is not installed separately.
+Otherwise the installer chooses `torch==2.4.1` from the CUDA 12.1 index for Python 3.8–3.9, or
+`torch==2.10.0` from the CUDA 12.6 index for Python 3.10–3.14 by default.
+Use **CUDA build** to choose another official wheel profile compatible with
+Slicer's Python: CUDA 11.8/12.1/12.4 with PyTorch 2.4.1 for Python 3.8–3.12,
+or CUDA 12.6/12.8/13.0 with PyTorch 2.10.0 for Python 3.10–3.14. The same selector
+is available in the universal installer. Choose a build supported by your NVIDIA
+driver; WMA itself is not fixed to CUDA 12.1. Existing working CUDA PyTorch is
+reused regardless of the selected download profile. Verification runs in a fresh
+process. CUDA 12.1 / PyTorch 2.4.1 is validated here; other builds require native
+validation. See the [official wheel commands](https://pytorch.org/get-started/previous-versions/).
+Triton is optional and is not installed separately.
 
 Downloads may total several GB. After installation, restart Slicer and select
 Auto/GPU. Installation failures appear in the log and can be retried after the
