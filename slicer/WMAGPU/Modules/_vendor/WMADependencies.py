@@ -9,8 +9,9 @@ import sys
 import tempfile
 
 REQUIRED = {'scipy': ('scipy.optimize', 'scipy.cluster.vq', 'scipy.cluster.hierarchy'),
-            'matplotlib': ('matplotlib.pyplot',)}
-REQUIREMENTS = {'scipy': 'scipy>=1.4', 'matplotlib': 'matplotlib>=3.5'}
+            'matplotlib': ('matplotlib.pyplot',), 'threadpoolctl': ('threadpoolctl',)}
+REQUIREMENTS = {'scipy': 'scipy>=1.4', 'matplotlib': 'matplotlib>=3.5',
+                'threadpoolctl': 'threadpoolctl>=3.1'}
 
 
 def missing_packages():
@@ -18,8 +19,10 @@ def missing_packages():
     for package, modules in REQUIRED.items():
         try:
             for module in modules:
-                importlib.import_module(module)
-        except ImportError:
+                loaded = importlib.import_module(module)
+                if package == 'threadpoolctl':
+                    getattr(loaded, 'ThreadpoolController')
+        except (ImportError, AttributeError):
             missing.append(REQUIREMENTS[package])
     return missing
 

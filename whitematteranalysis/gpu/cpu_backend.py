@@ -16,6 +16,10 @@ depend on the number of threads.
 
 """
 
+import os
+from contextlib import contextmanager
+from threading import RLock
+
 import numpy
 
 from .config import config
@@ -223,6 +227,53 @@ def _distance_matrix(Xn, Xm, threshold, distance_method='Hausdorff',
     return out
 
 
+_BLAS_LOCK = RLock()
+_BLAS_USERS = 0
+_BLAS_CAP = 0
+_BLAS_CONTROLLER = None
+_BLAS_LIMITERS = []
+
+
+@contextmanager
+def _atlas_blas_scope(columns, workers):
+    """Share BLAS caps across concurrent fits; restore when the last fit exits."""
+    global _BLAS_USERS, _BLAS_CAP, _BLAS_CONTROLLER
+    from joblib import cpu_count
+    automatic = min(4, max(1, cpu_count() - workers + 1)) if columns <= 32 else 0
+    threads = int(os.environ.get('WMA_CPU_BLAS_THREADS', str(automatic)))
+    if threads < 1:
+        yield
+        return
+    try:
+        from threadpoolctl import ThreadpoolController
+    except ImportError:
+        yield
+        return
+    with _BLAS_LOCK:
+        if not _BLAS_USERS:
+            _BLAS_CONTROLLER = ThreadpoolController().select(user_api='blas')
+        if not _BLAS_USERS or threads < _BLAS_CAP:
+            limits = {}
+            for library in _BLAS_CONTROLLER.info():
+                if library['num_threads']:
+                    prefix = library['prefix']
+                    limits[prefix] = min(threads, library['num_threads'], limits.get(prefix, threads))
+            _BLAS_LIMITERS.append(_BLAS_CONTROLLER.limit(limits=limits))
+            _BLAS_CAP = threads
+        _BLAS_USERS += 1
+    try:
+        yield
+    finally:
+        with _BLAS_LOCK:
+            _BLAS_USERS -= 1
+            if not _BLAS_USERS:
+                for limiter in reversed(_BLAS_LIMITERS):
+                    limiter.restore_original_limits()
+                _BLAS_LIMITERS.clear()
+                _BLAS_CONTROLLER = None
+                _BLAS_CAP = 0
+
+
 def atlas_label(input_polydata, atlas, number_of_jobs=None):
     """Stream CPU distances and project only the required embedding columns.
 
@@ -248,7 +299,7 @@ def atlas_label(input_polydata, atlas, number_of_jobs=None):
     # Target 8 MiB for the similarity block, independently of subject size.
     block_rows = max(1, min(512, (8 * 1024 * 1024) // (8 * max(1, len(fixed)))))
     threads = cpu_threads(number_of_jobs)
-    with ThreadPoolExecutor(max_workers=threads) as pool:
+    with _atlas_blas_scope(count, threads), ThreadPoolExecutor(max_workers=threads) as pool:
         for start in range(0, n, block_rows):
             stop = min(n, start + block_rows)
             B = _distance_matrix(queries[start:stop], fixed, atlas.threshold,

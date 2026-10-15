@@ -2,6 +2,8 @@
 import tempfile
 import types
 import unittest
+import sys
+import os
 from pathlib import Path
 from unittest.mock import patch
 
@@ -12,6 +14,94 @@ from test_atlas_blocks import polydata
 
 
 class CPUAtlasTests(unittest.TestCase):
+    def test_blas_scope_restore_disable_and_optional_package(self):
+        try:
+            from threadpoolctl import ThreadpoolController
+        except ImportError:
+            self.skipTest('threadpoolctl is unavailable')
+        cpu = wma.gpu.cpu_backend
+        controller = ThreadpoolController().select(user_api='blas')
+        if not controller.info():
+            self.skipTest('No controllable BLAS library')
+        rng = np.random.RandomState(90)
+        atlas = types.SimpleNamespace(number_of_eigenvectors=3,
+            row_sum_1=np.ones(11), row_sum_matrix=rng.uniform(0, .1, 11),
+            e_vec=rng.uniform(.1, 1, (11, 4)), e_val=np.arange(1., 5.),
+            e_vec_norm=np.ones(4), centroids=rng.uniform(0, 2, (5, 3)),
+            nystrom_polydata=polydata(11), threshold=.1, sigma=20.,
+            distance_method='Mean', bilateral=False)
+        subject = polydata(513)
+        with controller.limit(limits=8), patch.dict('os.environ', WMA_CPU_BLAS_THREADS='0'):
+            expected = cpu.atlas_label(subject, atlas, number_of_jobs=4)
+            original = controller.info()
+            real_dot = np.dot
+
+            def limited(*args, **kwargs):
+                self.assertTrue(all(lib['num_threads'] == 1 for lib in controller.info()))
+                return real_dot(*args, **kwargs)
+
+            with patch.dict('os.environ', WMA_CPU_BLAS_THREADS='1'), \
+                    patch.object(np, 'dot', side_effect=limited):
+                actual = cpu.atlas_label(subject, atlas, number_of_jobs=4)
+            self.assertEqual(controller.info(), original)
+            np.testing.assert_array_equal(actual[1], expected[1])
+            for a, b in zip(actual, expected):
+                np.testing.assert_allclose(a, b, rtol=1e-12, atol=1e-12)
+            with patch.dict('os.environ', WMA_CPU_BLAS_THREADS='1'), \
+                    patch.object(np, 'dot', side_effect=RuntimeError('projection failed')):
+                with self.assertRaisesRegex(RuntimeError, 'projection failed'):
+                    cpu.atlas_label(subject, atlas, number_of_jobs=4)
+            self.assertEqual(controller.info(), original)
+            with patch.dict('os.environ', WMA_CPU_BLAS_THREADS='1'), \
+                    patch.dict(sys.modules, {'threadpoolctl': None}):
+                fallback = cpu.atlas_label(subject, atlas, number_of_jobs=4)
+            for a, b in zip(fallback, expected):
+                np.testing.assert_array_equal(a, b)
+            self.assertEqual(controller.info(), original)
+        with controller.limit(limits=1), patch.dict('os.environ', WMA_CPU_BLAS_THREADS='4'):
+            before = controller.info()
+            with cpu._atlas_blas_scope(4, 4):
+                self.assertEqual(controller.info(), before)
+        with controller.limit(limits=8), patch.dict('os.environ'):
+            os.environ.pop('WMA_CPU_BLAS_THREADS', None)
+            before = controller.info()
+            with cpu._atlas_blas_scope(33, 4):
+                self.assertEqual(controller.info(), before)
+        with controller.limit(limits=8), patch.dict('os.environ', WMA_CPU_BLAS_THREADS='4'):
+            before = controller.info()
+            with cpu._atlas_blas_scope(4, 4):
+                with patch.dict('os.environ', WMA_CPU_BLAS_THREADS='1'):
+                    with cpu._atlas_blas_scope(4, 4):
+                        self.assertTrue(all(lib['num_threads'] == 1 for lib in controller.info()))
+                self.assertTrue(all(lib['num_threads'] == 1 for lib in controller.info()))
+            self.assertEqual(controller.info(), before)
+
+    def test_concurrent_projection_scopes_restore_settings(self):
+        try:
+            from threadpoolctl import ThreadpoolController
+        except ImportError:
+            self.skipTest('threadpoolctl is unavailable')
+        from concurrent.futures import ThreadPoolExecutor
+        from threading import Barrier
+        import time
+        controller = ThreadpoolController().select(user_api='blas')
+        if not controller.info():
+            self.skipTest('No controllable BLAS library')
+        barrier = Barrier(2, timeout=5)
+        with controller.limit(limits=8), patch.dict('os.environ', WMA_CPU_BLAS_THREADS='1'):
+            before = controller.info()
+
+            def project():
+                barrier.wait()
+                with wma.gpu.cpu_backend._atlas_blas_scope(4, 4):
+                    self.assertTrue(all(lib['num_threads'] == 1 for lib in controller.info()))
+                    time.sleep(.02)
+                    self.assertTrue(all(lib['num_threads'] == 1 for lib in controller.info()))
+
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                list(pool.map(lambda _: project(), range(2)))
+            self.assertEqual(controller.info(), before)
+
     def test_explicit_cpu_similarity_does_not_use_global_cuda(self):
         data = polydata(11)
         with patch.object(wma.gpu.config, 'requested', True), \

@@ -5,6 +5,7 @@ import io
 from pathlib import Path
 import sys
 import tempfile
+import types
 import unittest
 from unittest.mock import patch
 import zipfile
@@ -27,6 +28,13 @@ installer = module_at('wma_installer', ROOT / 'tools/installer_template.py')
 
 
 class InstallerTests(unittest.TestCase):
+    def test_blas_dependency_feature_probe(self):
+        available = types.SimpleNamespace(ThreadpoolController=object)
+        with patch.object(dependencies.importlib, 'import_module', return_value=available):
+            self.assertEqual(dependencies.missing_packages(), [])
+        with patch.object(dependencies.importlib, 'import_module', return_value=object()):
+            self.assertEqual(dependencies.missing_packages(), ['threadpoolctl>=3.1'])
+
     def test_version_detection(self):
         for version in ((5, 2), (5, 4), (5, 8), (5, 10), (5, 12), (6, 0)):
             self.assertEqual(installer.runtime_version(*version, (3, 12)), '%d.%d' % version)

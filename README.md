@@ -23,17 +23,18 @@ Choose one dependency profile in the same Python environment:
 
 ```shell
 # CPU: base dependencies, no PyTorch required
-python -m pip install -r requirements_cpu.txt
+python -m pip install -r requirements_cpu-2026-10-15.txt
 
 # GPU: all CPU dependencies plus CUDA 12.1 / PyTorch 2.4.1
-python -m pip install -r requirements_gpu.txt
+python -m pip install -r requirements_gpu-2026-10-15.txt
 python -c "import torch; print(torch.__version__, torch.cuda.is_available())"
 ```
 
 `setup.py` reads `requirements_cpu.txt`, so `python -m pip install .` installs
-the CPU/base profile by default. The GPU profile includes it using `-r` and adds
-the official CUDA wheel index alongside the base package index. Use the two
-profiles above for installation.
+the CPU/base profile by default. The dated profiles above add `threadpoolctl`
+for scoped CPU BLAS control; the GPU profile includes the dated CPU profile and
+the official CUDA wheel index. The original requirement files remain available
+as base profiles. CPU execution also works without this optional optimization.
 
 The GPU profile targets Linux/Windows x86_64 and Python 3.8–3.12 and uses the
 [official PyTorch CUDA 12.1 index](https://docs.pytorch.org/get-started/previous-versions/#v241).
@@ -127,6 +128,14 @@ for exact comparisons, memory peaks and measured timing limits.
 CPU queries now use contiguous coordinate rows where beneficial, and automatic
 parallelism respects CPU affinity/quotas. Slicer CPU labeling also follows the
 configured worker count. See the [query-packing and concurrency measurements](doc/gpu/progress-2026-10-15-cpu-query-packing.md).
+
+With `threadpoolctl` installed, CPU atlas labeling caps BLAS at up to four threads
+for up to 32 projection columns, accounting for available CPUs and distance
+workers. It retains parallel distance computation and restores
+the caller's settings after all concurrent fits finish. Set
+`WMA_CPU_BLAS_THREADS=0` to disable this cap or a positive value to choose its
+ceiling. Float64 embedding roundoff can differ from multithreaded BLAS within
+the existing numerical tolerance. See the [BLAS measurements and validation](doc/gpu/progress-2026-10-15-blas-control.md).
 
 ## 3D Slicer extension
 

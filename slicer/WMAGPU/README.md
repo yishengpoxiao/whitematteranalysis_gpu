@@ -24,8 +24,8 @@ does not depend on a separate WMA checkout or a legacy local module path.
    ```
 
    On Linux/macOS, use the extracted script's absolute path instead.
-3. Click **Install WMAGPU and required dependencies**. Missing SciPy/Matplotlib
-   and their dependencies are installed automatically through this Slicer's
+3. Click **Install WMAGPU and required dependencies**. Missing SciPy, Matplotlib,
+   threadpoolctl, and their dependencies are installed automatically through this Slicer's
    `PythonSlicer`, using compatible binary wheels. Working packages are reused;
    Slicer's NumPy and VTK versions are constrained to their existing versions.
    WMA, joblib, and xlrd are bundled. Full command-line WMA requirements are not
@@ -64,6 +64,13 @@ Opening a workflow page uses lazy computation imports and a shared environment
 check. PyTorch, SciPy, and Matplotlib load when the requested operation needs them;
 page setup performs no CUDA probe, dependency download, or package installation.
 The first computation can therefore take longer than subsequent computations.
+CPU atlas labeling uses threadpoolctl to bound small BLAS projections and
+centroid assignment while keeping distance workers parallel. Limits are shared
+across concurrent WMA CPU fits and restored after the last fit finishes.
+`WMA_CPU_BLAS_THREADS=0` disables this optimization; a positive value selects a
+ceiling without increasing existing smaller BLAS limits. The automatic ceiling
+is at most four for up to 32 projection columns and accounts for available CPUs
+and distance workers. Wider projections retain their caller's BLAS settings.
 In a bounded Linux Slicer 5.2.2 measurement, initializing all five pages decreased
 from 3.24 s to 0.035 s. This excludes Slicer startup, viewport rendering, and data
 loading; Windows still requires native timing. See
