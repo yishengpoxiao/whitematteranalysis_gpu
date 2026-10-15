@@ -16,8 +16,6 @@ depend on the number of threads.
 
 """
 
-import os
-
 import numpy
 
 from .config import config
@@ -35,15 +33,18 @@ def cpu_threads(requested=None):
         return int(requested)
     if config.cpu_threads:
         return int(config.cpu_threads)
-    return min(16, os.cpu_count() or 4)
+    from joblib import cpu_count
+    return min(16, cpu_count())
 
 
-def _tile_rows(m, points_per_fiber, dtype_bytes, threads):
+def _tile_rows(m, points_per_fiber, dtype_bytes, threads, distance_method):
     """Keep distance temporaries small enough for CPU cache reuse."""
 
-    # Compiled tiles reuse their point planes; the NumPy fallback needs at most
-    # three point buffers. Keep the same cache budget with fewer tiny tiles.
-    bytes_per_row = m * points_per_fiber * dtype_bytes * 3
+    # Larger short-fiber tiles reduce dispatch contention in large pools.
+    # Compiled float64 planes are reused; float32 fallback buffers are smaller.
+    buffers = 2 if (threads >= 16 and 8 <= points_per_fiber <= 32 and dtype_bytes == 8
+                    and distance_method != 'StrictSimilarity') else 3
+    bytes_per_row = m * points_per_fiber * dtype_bytes * buffers
     budget = (32 if threads == 1 else 16) * 1024 * 1024
     return max(1, int(budget // max(1, bytes_per_row)))
 
@@ -187,11 +188,14 @@ def _distance_matrix(Xn, Xm, threshold, distance_method='Hausdorff',
 
     dtype_bytes = 8
     threads = cpu_threads(number_of_jobs)
-    tr = tile_rows or _tile_rows(Xm.shape[0], Xn.shape[1], dtype_bytes, threads)
+    tr = tile_rows or _tile_rows(Xm.shape[0], Xn.shape[1], dtype_bytes, threads, distance_method)
     n = Xn.shape[0]
     # Each compiled point-distance call reads contiguous three-coordinate rows.
     if Xn.dtype == Xm.dtype == numpy.float64 and min(n, tr) * len(Xm) >= 4096:
         Xm = numpy.ascontiguousarray(Xm.transpose(1, 0, 2)).transpose(1, 0, 2)
+        if (Xn.strides[-1] != Xn.itemsize
+                and (threads < 16 or distance_method != 'StrictSimilarity')):
+            Xn = numpy.ascontiguousarray(Xn.transpose(1, 0, 2)).transpose(1, 0, 2)
 
     def compute(s, e):
         values = _distance_block(Xn[s:e], Xm, threshold, distance_method, bilateral, sigmasq)
@@ -353,12 +357,14 @@ def inner_loop_objective(fixed, moving, sigmasq, chunk_rows=None, threads=None, 
 
     threads = cpu_threads(threads)
     if chunk_rows is None:
-        chunk_rows = _tile_rows(n_fixed, points_per_fiber, 8, threads)
+        chunk_rows = _tile_rows(n_fixed, points_per_fiber, 8, threads, 'MeanSquared')
 
     fixed = fixed.transpose(1, 2, 0)
     moving = moving.transpose(1, 2, 0)
     if fixed.dtype == moving.dtype == numpy.float64 and min(n_moving, chunk_rows) * n_fixed >= 4096:
         fixed = numpy.ascontiguousarray(fixed.transpose(1, 0, 2)).transpose(1, 0, 2)
+        if moving.strides[-1] != moving.itemsize:
+            moving = numpy.ascontiguousarray(moving.transpose(1, 0, 2)).transpose(1, 0, 2)
     probability = numpy.empty(n_moving, dtype=numpy.float64)
 
     workers = min(threads, (n_moving + chunk_rows - 1) // chunk_rows)

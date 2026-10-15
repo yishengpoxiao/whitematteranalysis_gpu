@@ -124,6 +124,10 @@ blocks normalize without a full weight matrix. CPU tiles use the reduced scratch
 requirements. See the [similarity, normalization and tile measurements](doc/gpu/progress-2026-10-15-embedding-tiles.md)
 for exact comparisons, memory peaks and measured timing limits.
 
+CPU queries now use contiguous coordinate rows where beneficial, and automatic
+parallelism respects CPU affinity/quotas. Slicer CPU labeling also follows the
+configured worker count. See the [query-packing and concurrency measurements](doc/gpu/progress-2026-10-15-cpu-query-packing.md).
+
 ## 3D Slicer extension
 
 Use the [universal installer](slicer/WMAGPU/dist/WMAGPU-Installer.zip).

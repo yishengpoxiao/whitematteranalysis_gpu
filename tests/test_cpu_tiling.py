@@ -18,6 +18,32 @@ def fiber_array(values):
 
 
 class CPUTilingTests(unittest.TestCase):
+    def test_query_coordinate_layouts(self):
+        from test_output_pipeline import baseline_module
+        original = baseline_module('whitematteranalysis.gpu._querylayoutbaseline',
+                                   'gpu/cpu_backend.py', 'bf9fd0e')
+        rng = np.random.RandomState(86)
+        for points in (1, 15, 129):
+            queries = rng.normal(size=(17, points, 3))
+            fixed = rng.normal(size=(257, points, 3))
+            queries[-1, 0, 0], fixed[-1, 0, 0] = np.nan, np.inf
+            fixed = np.ascontiguousarray(fixed.transpose(2, 0, 1)).transpose(1, 2, 0)
+            fixed.setflags(write=False)
+            separated = np.ascontiguousarray(queries.transpose(2, 0, 1)).transpose(1, 2, 0)
+            for q in (queries, separated, queries[..., ::-1], separated[:, ::-1]):
+                before = q.copy()
+                q.setflags(write=False)
+                for method in ('Mean', 'MeanSquared', 'Hausdorff', 'StrictSimilarity'):
+                    for threshold in (0., .1):
+                        for bilateral in (False, True):
+                            for workers in (1, 4, 16):
+                                expected = original._distance_matrix(q, fixed, threshold, method,
+                                    bilateral, tile_rows=16, number_of_jobs=workers)
+                                actual = cpu._distance_matrix(q, fixed, threshold, method,
+                                    bilateral, tile_rows=16, number_of_jobs=workers)
+                                np.testing.assert_array_equal(actual, expected)
+                np.testing.assert_array_equal(q, before)
+
     def test_automatic_tiles_match_frozen_backend(self):
         from test_output_pipeline import baseline_module
         original = baseline_module('whitematteranalysis.gpu._tilesbaseline',
@@ -30,7 +56,7 @@ class CPUTilingTests(unittest.TestCase):
                 queries[-1, 0, 0], fixed[-1, 0, 0] = np.nan, np.inf
                 for method in ('Mean', 'MeanSquared', 'Hausdorff', 'StrictSimilarity'):
                     for bilateral in (False, True):
-                        for workers in (1, 4):
+                        for workers in (1, 4, 8, 16):
                             expected = original._distance_matrix(queries, fixed, .1, method,
                                 bilateral, number_of_jobs=workers)
                             actual = cpu._distance_matrix(queries, fixed, .1, method,
@@ -124,6 +150,8 @@ class CPUTilingTests(unittest.TestCase):
         from joblib import effective_n_jobs
         for requested in (1, 4, -1, -2):
             self.assertEqual(cpu.cpu_threads(requested), effective_n_jobs(requested))
+        with patch.object(cpu.config, 'cpu_threads', 0):
+            self.assertEqual(cpu.cpu_threads(), min(16, effective_n_jobs(-1)))
 
     def test_parallel_objective_matches_original(self):
         rng = np.random.RandomState(22)
@@ -161,7 +189,7 @@ class CPUTilingTests(unittest.TestCase):
                     np.testing.assert_array_equal(actual, expected)
 
     def test_automatic_tile_can_be_smaller_than_eight_rows(self):
-        self.assertEqual(cpu._tile_rows(1_000_000, 20, 8, 4), 1)
+        self.assertEqual(cpu._tile_rows(1_000_000, 20, 8, 4, 'Mean'), 1)
 
 
 if __name__ == '__main__':

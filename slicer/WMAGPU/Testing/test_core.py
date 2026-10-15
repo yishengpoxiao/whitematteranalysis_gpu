@@ -32,6 +32,33 @@ def tractography(seed):
 
 
 class CoreTests(unittest.TestCase):
+    def test_labeling_respects_cpu_worker_setting(self):
+        import types
+        rng = np.random.RandomState(88)
+        reference = tractography(1)
+        atlas = types.SimpleNamespace(number_of_eigenvectors=3,
+            nystrom_polydata=reference, threshold=0., sigma=20.,
+            distance_method='Mean', bilateral=False,
+            row_sum_1=np.ones(150), row_sum_matrix=np.zeros(150),
+            e_vec=rng.uniform(.1, 1, (150, 4)), e_val=np.arange(1., 5.),
+            e_vec_norm=np.ones(4), centroids=rng.uniform(0, 2, (7, 3)))
+        cpu = wma.gpu.cpu_backend
+        with patch.object(core, 'load_atlas', return_value=atlas), \
+                patch.object(wma.gpu.config, 'cpu_threads', 4), \
+                patch.object(cpu, '_distance_matrix', wraps=cpu._distance_matrix) as matrix:
+            parallel = core.run_atlas_labeling(tractography(2), '.', 0., backend='cpu')
+            self.assertTrue(matrix.call_args_list)
+            self.assertTrue(all(call.kwargs['number_of_jobs'] == 4 for call in matrix.call_args_list))
+            matrix.reset_mock()
+            serial = core.run_atlas_labeling(tractography(2), '.', 0., backend='cpu', number_of_jobs=1)
+            self.assertTrue(all(call.kwargs['number_of_jobs'] == 1 for call in matrix.call_args_list))
+        np.testing.assert_array_equal(parallel['cluster_idx'], serial['cluster_idx'])
+        for index in range(parallel['output_polydata'].GetCellData().GetNumberOfArrays()):
+            first = parallel['output_polydata'].GetCellData().GetArray(index)
+            second = serial['output_polydata'].GetCellData().GetArray(first.GetName())
+            np.testing.assert_array_equal(vtk.util.numpy_support.vtk_to_numpy(first),
+                                          vtk.util.numpy_support.vtk_to_numpy(second))
+
     def tearDown(self):
         core.resolve_backend('auto')
 

@@ -128,7 +128,7 @@ def load_atlas(atlas_directory):
 
 
 def run_atlas_labeling(input_polydata, atlas_directory, fiber_length_mm=40.0,
-                       backend='auto', number_of_jobs=1, progress_callback=None):
+                       backend='auto', number_of_jobs=None, progress_callback=None):
     """Label every fiber of `input_polydata` (vtkPolyData) with the
     clusters of a WMA atlas.
 

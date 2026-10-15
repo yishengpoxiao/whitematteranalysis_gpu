@@ -34,6 +34,8 @@ def main():
     parser.add_argument('--methods', nargs='+', choices=('Mean', 'MeanSquared', 'Hausdorff', 'StrictSimilarity'),
                         default=['Mean', 'MeanSquared', 'Hausdorff', 'StrictSimilarity'])
     parser.add_argument('--seed', type=int, default=54)
+    parser.add_argument('--layout', choices=('point', 'coordinate'), default='point')
+    parser.add_argument('--threshold', type=float, default=2.)
     parser.add_argument('--output', required=True)
     args = parser.parse_args()
     original = baseline_module('whitematteranalysis.gpu._pointmajor_baseline',
@@ -43,14 +45,18 @@ def main():
     for points in args.points:
         queries = rng.normal(size=(args.queries, points, 3)) * 40.
         fixed = rng.normal(size=(2500, points, 3)) * 40.
+        if args.layout == 'coordinate':
+            queries = np.ascontiguousarray(queries.transpose(2, 0, 1)).transpose(1, 2, 0)
+            fixed = np.ascontiguousarray(fixed.transpose(2, 0, 1)).transpose(1, 2, 0)
         for method in args.methods:
             for bilateral in (False, True):
                 for workers in args.workers:
                     def run(module):
-                        return module._distance_matrix(queries, fixed, 2., method, bilateral,
+                        return module._distance_matrix(queries, fixed, args.threshold, method, bilateral,
                                                        number_of_jobs=workers)
                     record = dict(queries=args.queries, fixed=len(fixed), points=points,
                         method=method, bilateral=bilateral, workers=workers,
+                        layout=args.layout, threshold=args.threshold,
                         **compare([lambda: run(original), lambda: run(current)], args.repeat))
                     records.append(record)
                     print(json.dumps(record), flush=True)
