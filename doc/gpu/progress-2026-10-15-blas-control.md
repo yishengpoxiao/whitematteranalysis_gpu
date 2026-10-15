@@ -166,3 +166,14 @@ laterality, atlas probability caching and parallel outlier removal.
 All five installed workflow pages initialize, CPU/GPU labeling and affine
 registration succeed, and five installed core functional tests pass. The final
 installer containing CUDA tile tuning is verified separately below.
+
+The final universal installer embeds source `ac55f9f` and passes the real
+installer UI again in a fresh extension directory. Its installed code passes
+all seven centroid/streamed-atlas tests without skips in Slicer Python on two
+visible GPUs. All five workflow pages, CPU/GPU classification, affine registration
+and five core tests pass in another fresh Slicer process. The 31 CPU tests above
+exercise identical CPU sources and dependencies. All 101 packaged source/license
+files match the repository, embedded payload and final installed directory.
+The tested archive replaces `slicer/WMAGPU/dist/WMAGPU-Installer.zip`; its name
+remains independent of date and Slicer version. Windows/macOS native execution
+and complete shell-pipeline timings are outside this validation.
