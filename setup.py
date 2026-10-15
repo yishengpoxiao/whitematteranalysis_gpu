@@ -17,7 +17,7 @@ if sys.platform == 'win32':
     os.environ['DISTUTILS_USE_SDK'] = '1'
 
 
-with open("requirements_cpu-2026-10-15-1.txt") as f:
+with open("requirements_cpu.txt") as f:
     required_dependencies = f.read().splitlines()
     external_dependencies = []
     for dependency in required_dependencies:

@@ -81,9 +81,7 @@ references produce a warning and retain the affected fibers without a check.
 for sequential execution or choose a larger limit. CPU workers use one distance
 thread each; GPU workers use separate streams on one selected GPU. More workers
 can reduce GPU throughput. Auto honors `WMA_CPU_THREADS` when set.
-Atlas reference statistics are cached across subjects and sessions; see the
-[acceleration guide](https://github.com/yishengpoxiao/whitematteranalysis_gpu/blob/main/doc/acceleration.md)
-for cache locations, numerical settings and performance measurements.
+Atlas reference statistics are cached across subjects and sessions.
 
 ### Registration and transforms
 

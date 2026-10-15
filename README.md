@@ -20,10 +20,10 @@ Choose one dependency profile in the same Python environment:
 
 ```shell
 # CPU: base dependencies, no PyTorch required
-python -m pip install -r requirements_cpu-2026-10-15-1.txt
+python -m pip install -r requirements_cpu.txt
 
 # GPU: all CPU dependencies plus CUDA 12.1 / PyTorch 2.4.1
-python -m pip install -r requirements_gpu-2026-10-15-1.txt
+python -m pip install -r requirements_gpu.txt
 python -c "import torch; print(torch.__version__, torch.cuda.is_available())"
 ```
 
@@ -61,9 +61,6 @@ Outlier removal shares cached atlas reference statistics across subjects.
 | `WMA_CPU_THREADS=4` | Set the accelerated CPU worker budget; otherwise use an affinity-aware default |
 | `WMA_CPU_BLAS_THREADS=0` | Disable automatic atlas-labeling BLAS caps; a positive value sets a ceiling |
 | `WMA_VTP_COMPRESSION=lz4` | Select faster lossless VTP writing; library/Slicer defaults use compact zlib |
-
-See [acceleration, performance and validation](doc/acceleration.md) for the
-current execution model, cache controls, numerical checks and benchmark commands.
 
 ## 3D Slicer extension
 
