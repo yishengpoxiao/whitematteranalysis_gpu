@@ -135,7 +135,9 @@ workers. It retains parallel distance computation and restores
 the caller's settings after all concurrent fits finish. Set
 `WMA_CPU_BLAS_THREADS=0` to disable this cap or a positive value to choose its
 ceiling. Float64 embedding roundoff can differ from multithreaded BLAS within
-the existing numerical tolerance. See the [BLAS measurements and validation](doc/gpu/progress-2026-10-15-blas-control.md).
+the existing numerical tolerance. CUDA nearest-centroid distances also use
+smaller blocks for short embeddings, preserving exact observed values and indices.
+See the [BLAS and CUDA tile measurements](doc/gpu/progress-2026-10-15-blas-control.md).
 
 ## 3D Slicer extension
 

@@ -1,4 +1,4 @@
-# Scoped CPU BLAS control and rejected CUDA centroid prototypes
+# Scoped CPU BLAS control and CUDA centroid tile tuning
 
 ## CPU implementation
 
@@ -101,9 +101,46 @@ values/indices. Nine interleaved repeats on RTX 4090 gave:
 | 2,048 / 800 / 20 | 0.423–0.462 ms | 0.517 ms | 6.173 ms |
 
 Tensor allocations decreased substantially, but common 800-centroid workloads
-became slower. These prototypes are rejected and no CUDA kernel changes are
-included. The tensor-allocation figures do not account for CUDA local spill
-memory. No whole-GPU-pipeline speedup is claimed for this batch.
+became slower. These prototypes are rejected. The tensor-allocation figures do
+not account for CUDA local spill memory.
+
+## Accepted CUDA tile tuning
+
+The existing direct distance kernel remains in use. For at most 16 embedding
+dimensions its block size decreases from 128 to 64 pairs; wider embeddings keep
+32. Arithmetic, float64 precision, dimensional reduction order, square root and
+the subsequent minimum operation are unchanged. This avoids the extra reduction
+and launch overhead of the rejected prototypes.
+
+Against `cef12ca`, eleven alternating repeats with the committed benchmark on
+an otherwise idle RTX 4090 give:
+
+| Queries / centroids / dimensions | Previous / current nearest-centroid time |
+| --- | ---: |
+| 2,048 / 800 / 10 | 0.2669 / 0.2500 ms |
+| 8,192 / 800 / 10 | 0.8179 / 0.7943 ms |
+| 2,048 / 800 / 20 | 0.3973 / 0.3969 ms; unchanged block policy |
+| 257 / 37 / 10 | 0.0974 / 0.0984 ms; essentially flat |
+
+The common ten-dimensional centroid step improves by 6.3% and 2.9% respectively.
+A separate 31-repeat dimension scan covers 1–32 dimensions and confirms exact
+values/indices; unchanged wide-dimensional cases also show timing variability.
+For the real 100,000-fiber classification, the eleven-repeat median changes from
+0.6456 to 0.6406 s (0.8%). An earlier independent eleven-repeat run gives
+0.6471 / 0.6410 s. This small whole-classification difference is within the
+scale of timing variation and is not a robust end-to-end speedup claim.
+Labels, embeddings, colors, stored attributes and serialized VTP bytes match
+exactly. Peak extra tensor allocation remains 85,669,376 bytes. File reading,
+atlas loading, import/JIT warmup and serialization are outside timing.
+
+```bash
+export PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.:tests
+export WMA_GPU=on CUDA_VISIBLE_DEVICES=0
+export OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 OMP_NUM_THREADS=1
+python tests/bench_gpu_centroid_tiles.py --baseline cef12ca --repeat 11 \
+  --input "$TRACTOGRAPHY" --atlas "$ATLAS_DIRECTORY" --fibers 100000 \
+  --output "$NEW_CENTROID_TILE_REPORT"
+```
 
 ## Validation
 
@@ -114,4 +151,18 @@ Five CPU atlas tests, five installer tests and five extension core tests pass.
 Installer probes verify the ThreadpoolController API and continue to pin Slicer's
 NumPy/VTK versions. Original numerical/thread/tile tests also pass under their
 existing one-thread BLAS environment, where the new limit does not change BLAS
-arithmetic.
+arithmetic. Seven CUDA centroid/atlas tests also pass, covering dimensions,
+extreme magnitudes, ties, NaNs/infinities, strides, fallbacks, empty queries,
+selected devices, tensor release and streamed atlas output.
+
+## Native Slicer checks
+
+The universal installer built from `cef12ca` passes the real installer UI test,
+including a failed launch, retry, dependency verification and optional CUDA probe.
+Slicer Python supplies NumPy 1.23.4, SciPy 1.9.2, joblib 1.4.2, VTK 9.1.0 and
+the automatically selected threadpoolctl 3.6.0. The installed CPU backend passes
+31 tests without skips: tiling, atlas labeling/BLAS scopes, registration,
+laterality, atlas probability caching and parallel outlier removal.
+All five installed workflow pages initialize, CPU/GPU labeling and affine
+registration succeed, and five installed core functional tests pass. The final
+installer containing CUDA tile tuning is verified separately below.

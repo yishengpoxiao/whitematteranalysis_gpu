@@ -125,7 +125,7 @@ def centroid_distances(queries, centroids):
 
     output = torch.empty((len(queries), len(centroids)), dtype=queries.dtype, device=queries.device)
     dimensions = queries.shape[1]
-    block = 128 if dimensions <= 16 else 32
+    block = 64 if dimensions <= 16 else 32
     if output.numel():
         with torch.cuda.device(queries.device):
             _centroid_distances[(triton.cdiv(output.numel(), block),)](
