@@ -37,6 +37,10 @@ These are single complete runs on a shared workstation, including reading,
 writing, process startup and Slicer transform hardening. Filesystem/JIT caches
 and workstation load are not reset; file/scene stages remain CPU operations.
 Total time includes shell overhead and can differ slightly from the stage sum.
+The final four stages use the same CPU/Slicer implementations in every profile;
+their per-run timing differences are not measurements of different mathematical
+backends. See the [acceleration overview](doc/acceleration.md) for the changes
+behind the registration, labeling and outlier-removal speedups.
 Interactive display and optional diffusion-measure export are excluded.
 All runs produce 800 initial, outlier-removed and transformed cluster files plus
 74 anatomical tracts. Validation compares every cluster/tract VTP, all hemisphere
@@ -52,6 +56,32 @@ this joblib run:
   is **3.31e-13**. The full registered VTK also preserves connectivity and
   original attribute bytes exactly. These floating differences pass
   `rtol=1e-6, atol=1e-5` for coordinates and `rtol=1e-10, atol=1e-10` for transforms.
+
+### Final-stage scheduling check
+
+A separate control reused identical saved C028 intermediates (800 clusters,
+about 131,000 retained fibers) to compare one worker with four workers. Values
+below are the median of two runs per setting, with execution order reversed,
+the same four-core affinity and fresh outputs. Hemisphere labels were removed
+from input copies before assessment so that the calculation ran again. Input
+preparation and output validation are outside the timed commands; process
+startup and stage I/O are included. Filesystem caches were not flushed.
+
+| Step | One worker, s | Four workers, s |
+| --- | ---: | ---: |
+| Hemisphere assessment | 37.4 | 14.5 |
+| Inverse transform with Slicer | 86.9 | 29.8 |
+| Hemisphere separation | 31.6 | 9.1 |
+| Anatomical tract assembly | 48.8 | 15.2 |
+
+Four workers were faster in every stage, so the current parallel implementation
+is retained. A four-thread control was also slower for the three Python file
+stages; inverse transformation already launches independent Slicer processes.
+All VTP outputs in the 22 stage runs were byte-identical to the corresponding saved
+joblib results. The one-worker control uses the current geometry/I/O functions
+with serial scheduling; it is not a benchmark of an unmodified upstream checkout.
+These are isolated-stage measurements, not replacement full-pipeline totals.
+The complete-run times above remain unchanged.
 
 # GPU and 3D Slicer quick start
 
