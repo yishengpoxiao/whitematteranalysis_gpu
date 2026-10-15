@@ -4,6 +4,55 @@ WhiteMatterAnalysis (WMA) provides fiber clustering and tractography analysis to
 This fork adds CUDA GPU acceleration, a vectorized CPU backend, and a five-module
 3D Slicer extension. It is based on the [upstream WMA project](https://github.com/SlicerDMRI/whitematteranalysis).
 
+## Full-pipeline performance
+
+A whole-brain input of approximately **330,000 streamlines (3.6 GB)** was processed
+through `wm_apply_ORG_atlas_to_subject.sh` with ORG-800FC-100HCP and
+ORG-RegAtlas-100HCP. All three modes use the same updated source, four physical
+CPU cores, `-n 4 -r rig -x 1 -c 0`, standard sampling seed 1000, and float64.
+Hardware: Intel Xeon Gold 6330 and one NVIDIA RTX 4090; Linux, Python 3.8,
+PyTorch 2.4.1/CUDA 12.1 and Slicer 5.2.2 with SlicerDMRI. CUDA 12.1 is the
+benchmark environment, not a WMA requirement.
+
+Total runtime: original joblib **29.2 min**, CPU matrix **5.4 min** (**5.46x** speedup), and GPU **3.0 min** (**9.69x** speedup).
+
+| Step | Joblib (4 workers), s | CPU matrix, s | CPU speedup | GPU, s | GPU speedup |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Registration (rigid + affine) | 378.8 | 68.4 | 5.54x | 39.1 | 9.68x |
+| Atlas labeling and cluster saving | 1104.0 | 99.0 | 11.15x | 30.7 | 35.95x |
+| Outlier removal | 203.7 | 83.9 | 2.43x | 28.5 | 7.14x |
+| Hemisphere assessment | 10.8 | 14.1 | 0.77x | 24.3 | 0.45x |
+| Inverse transform with Slicer | 29.7 | 28.9 | 1.03x | 31.1 | 0.96x |
+| Hemisphere separation | 8.9 | 9.8 | 0.91x | 8.9 | 0.99x |
+| Anatomical tract assembly | 14.9 | 15.2 | 0.98x | 14.9 | 1.00x |
+| **Total** | **1752.8** | **321.0** | **5.46x** | **180.8** | **9.69x** |
+
+Speedup is joblib time divided by the corresponding accelerated time. Original
+joblib means the original per-fiber mathematical backend within the current
+pipeline; common file/I/O improvements are shared by all modes. Four workers
+apply where the original algorithm supports parallelism. Each mode starts in a
+fresh output directory; accelerated atlas-reference caches start empty.
+
+These are single complete runs on a shared workstation, including reading,
+writing, process startup and Slicer transform hardening. Filesystem/JIT caches
+and workstation load are not reset; file/scene stages remain CPU operations.
+Total time includes shell overhead and can differ slightly from the stage sum.
+Interactive display and optional diffusion-measure export are excluded.
+All runs produce 800 initial, outlier-removed and transformed cluster files plus
+74 anatomical tracts. Validation compares every cluster/tract VTP, all hemisphere
+splits, the full registered tractogram and all 11 saved ITK transforms against
+this joblib run:
+
+- **CPU matrix:** all 4,874 VTP files and the registered VTK are byte-identical;
+  all 11 transform parameter sets match exactly.
+- **GPU:** cluster membership, counts, topology, active data attributes and all
+  point/cell/field data values match exactly. Of 4,874 VTPs, 4,794 are
+  byte-identical; the remaining 80 differ only in coordinates. Maximum coordinate
+  difference is **1.91e-6 mm**, and maximum saved transform-parameter difference
+  is **3.31e-13**. The full registered VTK also preserves connectivity and
+  original attribute bytes exactly. These floating differences pass
+  `rtol=1e-6, atol=1e-5` for coordinates and `rtol=1e-10, atol=1e-10` for transforms.
+
 # GPU and 3D Slicer quick start
 
 ## Python / command line
