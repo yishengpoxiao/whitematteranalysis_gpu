@@ -139,6 +139,12 @@ registration methods, output visualization, dependencies and packaging.
 
 # Documentation and command-line use
 
+The [command-line reference](doc/command-line-reference.md) covers all **28 scripts
+in `bin/`**, with their purpose, every argument and default, input/output layouts,
+and example commands. It includes the full ORG pipeline, registration presets,
+atlas building and labeling, preprocessing, merging, measurements and quality
+control, plus CPU/joblib/GPU backend selection and the internal Slicer helper.
+
 Run `wm_quality_control_tractography.py --help` to check the CLI installation.
 
 The upstream `whitematteranalysis` documentation can be found at
