@@ -123,3 +123,16 @@ labels 2,048 real fibers in 1.8135 / 0.4252 s (five alternating warm repeats,
 colors and every cell attribute array match exactly. This isolates the serial
 job override using the current kernel, rather than timing a complete earlier
 Slicer release or a whole pipeline.
+
+## Installed Slicer delivery
+
+The date-free universal installer is built from `4a0617f` and exercised through
+its actual UI in a fresh isolated native Slicer 5.2.2 environment. All 29 targeted
+installed CPU tests pass without skips using NumPy 1.23.4, SciPy 1.9.2,
+joblib 1.4.2 and VTK 9.1.0, covering both compiled and fallback distance paths,
+affinity-aware defaults, cache invalidation, parallel outliers and laterality.
+In another fresh process all five pages load, CPU/CUDA atlas labels agree,
+registration works and all five core tests pass, including the default/explicit
+CPU labeling worker test. All 101 packaged and actually installed library/module
+source files match repository bytes. The tested archive is the delivered
+`WMAGPU-Installer.zip`. GPU computational kernels are unchanged in this batch.
