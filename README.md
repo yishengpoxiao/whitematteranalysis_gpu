@@ -23,10 +23,10 @@ Choose one dependency profile in the same Python environment:
 
 ```shell
 # CPU: base dependencies, no PyTorch required
-python -m pip install -r requirements_cpu-2026-10-15.txt
+python -m pip install -r requirements_cpu-2026-10-15-1.txt
 
 # GPU: all CPU dependencies plus CUDA 12.1 / PyTorch 2.4.1
-python -m pip install -r requirements_gpu-2026-10-15.txt
+python -m pip install -r requirements_gpu-2026-10-15-1.txt
 python -c "import torch; print(torch.__version__, torch.cuda.is_available())"
 ```
 

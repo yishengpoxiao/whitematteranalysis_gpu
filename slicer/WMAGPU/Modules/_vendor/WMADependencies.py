@@ -11,7 +11,7 @@ import tempfile
 REQUIRED = {'scipy': ('scipy.optimize', 'scipy.cluster.vq', 'scipy.cluster.hierarchy'),
             'matplotlib': ('matplotlib.pyplot',), 'threadpoolctl': ('threadpoolctl',)}
 REQUIREMENTS = {'scipy': 'scipy>=1.4', 'matplotlib': 'matplotlib>=3.5',
-                'threadpoolctl': 'threadpoolctl>=3.1'}
+                'threadpoolctl': 'threadpoolctl>=3.1,<3.7'}
 
 
 def missing_packages():
@@ -22,6 +22,8 @@ def missing_packages():
                 loaded = importlib.import_module(module)
                 if package == 'threadpoolctl':
                     getattr(loaded, 'ThreadpoolController')
+                    if not (3, 1) <= tuple(map(int, loaded.__version__.split('.')[:2])) < (3, 7):
+                        raise ImportError('Unsupported BLAS controller scope')
         except (ImportError, AttributeError):
             missing.append(REQUIREMENTS[package])
     return missing

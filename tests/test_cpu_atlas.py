@@ -58,6 +58,11 @@ class CPUAtlasTests(unittest.TestCase):
             for a, b in zip(fallback, expected):
                 np.testing.assert_array_equal(a, b)
             self.assertEqual(controller.info(), original)
+            import threadpoolctl
+            with patch.object(threadpoolctl, '__version__', '3.7.0'), \
+                    patch.dict('os.environ', WMA_CPU_BLAS_THREADS='1'):
+                with cpu._atlas_blas_scope(4, 4):
+                    self.assertEqual(controller.info(), original)
         with controller.limit(limits=1), patch.dict('os.environ', WMA_CPU_BLAS_THREADS='4'):
             before = controller.info()
             with cpu._atlas_blas_scope(4, 4):

@@ -245,7 +245,10 @@ def _atlas_blas_scope(columns, workers):
         yield
         return
     try:
-        from threadpoolctl import ThreadpoolController
+        from threadpoolctl import ThreadpoolController, __version__
+        # Shared restoration requires the process-scoped API used in 3.1–3.6.
+        if not (3, 1) <= tuple(map(int, __version__.split('.')[:2])) < (3, 7):
+            raise ImportError('Unsupported BLAS controller scope')
     except ImportError:
         yield
         return

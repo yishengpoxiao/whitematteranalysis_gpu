@@ -17,8 +17,10 @@ SciPy's vector quantization both use BLAS: the
 uses GEMM when the feature count is at least five. Limiting only the projection
 expressions leaves the centroid-assignment GEMM unrestricted.
 
-The [threadpoolctl API](https://github.com/joblib/threadpoolctl) exposes
-process-scoped library settings. Concurrent WMA CPU fits share their lowest
+The supported [threadpoolctl 3.1–3.6 API](https://github.com/joblib/threadpoolctl/blob/3.6.0/threadpoolctl.py)
+uses process-scoped BLAS settings. Later versions are excluded because upstream
+development changes MKL to thread-local setters; unsupported versions leave BLAS
+untouched, and the Slicer installer selects the supported version range. Concurrent WMA CPU fits share their lowest
 requested ceiling without serializing their distance work. A lock protects
 entry/exit bookkeeping; the original BLAS settings are restored after the last
 enabled fit exits, including failures. Descending limits are retained for the
@@ -27,7 +29,7 @@ selection are not changed. As with other threadpoolctl contexts, concurrent
 non-WMA BLAS users can observe the temporary process-level limit.
 
 No NumPy or VTK replacement is required. The Slicer installer installs
-`threadpoolctl>=3.1` when missing, including an API feature probe for older
+`threadpoolctl>=3.1,<3.7` when missing, including an API feature probe for older
 packages. Standalone users can install the new dated CPU/GPU requirement
 profiles; the original requirement files and setup.py are preserved.
 
@@ -73,7 +75,7 @@ Limiting each projection separately produced only 39.5480 / 38.4434 s in the
 full case, so the final shared whole-fit scope is used instead.
 
 ```bash
-python -m pip install -r requirements_cpu-2026-10-15.txt
+python -m pip install -r requirements_cpu-2026-10-15-1.txt
 export PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.:tests
 export WMA_GPU=off CUDA_VISIBLE_DEVICES=
 unset OPENBLAS_NUM_THREADS MKL_NUM_THREADS OMP_NUM_THREADS
