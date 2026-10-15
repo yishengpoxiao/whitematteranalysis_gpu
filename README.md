@@ -1,7 +1,4 @@
-whitematteranalysis
-===================
-
-# Synopsis
+# WhiteMatterAnalysis
 
 WhiteMatterAnalysis (WMA) provides fiber clustering and tractography analysis tools.
 This fork adds CUDA GPU acceleration, a vectorized CPU backend, and a five-module
@@ -30,11 +27,9 @@ python -m pip install -r requirements_gpu-2026-10-15-1.txt
 python -c "import torch; print(torch.__version__, torch.cuda.is_available())"
 ```
 
-`setup.py` reads `requirements_cpu.txt`, so `python -m pip install .` installs
-the CPU/base profile by default. The dated profiles above add `threadpoolctl`
-for scoped CPU BLAS control; the GPU profile includes the dated CPU profile and
-the official CUDA wheel index. The original requirement files remain available
-as base profiles. CPU execution also works without this optional optimization.
+`python -m pip install .` installs the current CPU profile, including
+`threadpoolctl` for scoped BLAS control. The GPU profile includes the CPU profile
+and the official CUDA wheel index. Only the latest CPU/GPU profiles are retained.
 
 The GPU profile targets Linux/Windows x86_64 and Python 3.8–3.12 and uses the
 [official PyTorch CUDA 12.1 index](https://docs.pytorch.org/get-started/previous-versions/#v241).
@@ -54,90 +49,21 @@ Linux / Python 3.8 and Slicer 5.2.2 / Python 3.9 were tested; Windows has not be
 These environment variables apply to the Python/CLI backend. Slicer pages provide
 their own Backend selection. Some CLI tools also expose `-gpu auto|on|off`,
 `-gpu_float32`, and `-gpu_devices`; check the individual tool's `--help`.
-See [GPU development and validation records](doc/gpu/) for tested behavior and measurements.
 
-CPU atlas labeling streams similarity blocks and computes only the required
-embedding columns. CPU registration reuses tiled worker pools; GPU registration
-fuses distance and probability calculations when Triton is available. See the
-[CPU/GPU optimization measurements](doc/gpu/progress-2026-10-14-streaming.md)
-for numerical checks, stage timings, and their scope.
+The accelerated CPU backend streams distance/similarity tiles and honors CPU
+affinity. CUDA performs distance, probability, embedding and centroid operations
+on the selected device, using optional Triton kernels with a PyTorch fallback.
+Float64 is the default; float32 is an explicit accuracy/performance tradeoff.
+Outlier removal shares cached atlas reference statistics across subjects.
 
-GPU labeling keeps normalization and nearest-centroid selection on CUDA, and
-affine registration reuses a fused transform when Triton is available. See the
-[latest GPU measurements](doc/gpu/progress-2026-10-15-gpu.md).
+| Additional setting | Behavior |
+| --- | --- |
+| `WMA_CPU_THREADS=4` | Set the accelerated CPU worker budget; otherwise use an affinity-aware default |
+| `WMA_CPU_BLAS_THREADS=0` | Disable automatic atlas-labeling BLAS caps; a positive value sets a ceiling |
+| `WMA_VTP_COMPRESSION=lz4` | Select faster lossless VTP writing; library/Slicer defaults use compact zlib |
 
-Geometry preparation avoids full tractogram copies, and CPU distance tiles use
-SciPy's compiled kernel where beneficial. See the
-[geometry and CPU measurements](doc/gpu/progress-2026-10-15-geometry-cpu.md).
-
-An optional short-vector CUDA kernel also accelerates nearest-centroid distances
-without changing float64 results. See the
-[centroid optimization measurements](doc/gpu/progress-2026-10-15-centroids.md).
-
-GPU bilateral comparisons share one fused launch; compiled CPU distances read
-packed reference coordinates. See the
-[bilateral and layout measurements](doc/gpu/progress-2026-10-15-bilateral-layout.md).
-
-The [complete ORG GPU case](doc/gpu/benchmark-org-2026-10-15-optimized.md)
-also verifies all cluster/anatomical files against the preceding run.
-Independent CLI file stages now honor the pipeline worker count, and VTP writing
-uses fast lossless compression. See the [file-stage record](doc/gpu/progress-2026-10-15-file-stages.md).
-
-The ORG CLI uses LZ4 for disposable intermediate VTPs and compact zlib for final
-anatomical export. Set `WMA_VTP_COMPRESSION=zlib` for compact intermediates, or
-`lz4` to select it explicitly for library writes. See the
-[intermediate codec record](doc/gpu/progress-2026-10-15-intermediate-codec.md).
-
-The [complete optimized CPU/GPU benchmark](doc/gpu/benchmark-org-2026-10-15-final.md)
-records the latest full-case times, resource use, output catalogue and numerical
-comparisons against the original complete GPU run.
-
-CPU and GPU outlier removal reuse cached atlas coordinates and reference
-probabilities across subjects and process restarts. Cache keys include atlas
-file identity, numerical parameters, backend, precision, library versions and
-implementation; changed references are recomputed automatically. See the
-[atlas cache measurements and controls](doc/gpu/progress-2026-10-15-atlas-cache.md).
-
-GPU affine/nonrigid registration reuses pinned probability storage and adaptive
-tile budgets; CPU zero-threshold Mean distances fuse point square roots into
-SciPy's compiled calculation. See the [registration workspace and Mean distance
-measurements](doc/gpu/progress-2026-10-15-registration-workspace.md) for exact
-optimizer/output checks and the measured limits of these gains.
-
-StrictSimilarity has an optional fused float64 CUDA kernel, and CPU/GPU laterality
-reduces row tiles instead of retaining whole-brain similarity matrices. Atlas
-outlier references also reuse geometry-only XML readers. See the
-[StrictSimilarity, laterality and reference I/O measurements](doc/gpu/progress-2026-10-15-strict-geometry.md)
-for scope, exact-value checks, memory use and full-stage timing limits.
-
-Compiled CPU distance tiles now reduce point planes directly, avoiding the
-large transpose/copy while retaining NumPy's point summation order. See the
-[CPU point-plane measurements](doc/gpu/progress-2026-10-15-cpu-point-planes.md)
-for distance, registration and real atlas-labeling comparisons.
-
-The eager PyTorch GPU path reuses point-distance scratch to reduce live tensor
-memory by approximately 32–50%. See the
-[GPU scratch measurements](doc/gpu/progress-2026-10-15-gpu-scratch.md)
-for exact-value checks, timing results and the affected execution paths.
-
-GPU similarity kernels also fuse the Gaussian conversion, and large embedding
-blocks normalize without a full weight matrix. CPU tiles use the reduced scratch
-requirements. See the [similarity, normalization and tile measurements](doc/gpu/progress-2026-10-15-embedding-tiles.md)
-for exact comparisons, memory peaks and measured timing limits.
-
-CPU queries now use contiguous coordinate rows where beneficial, and automatic
-parallelism respects CPU affinity/quotas. Slicer CPU labeling also follows the
-configured worker count. See the [query-packing and concurrency measurements](doc/gpu/progress-2026-10-15-cpu-query-packing.md).
-
-With `threadpoolctl` installed, CPU atlas labeling caps BLAS at up to four threads
-for up to 32 projection columns, accounting for available CPUs and distance
-workers. It retains parallel distance computation and restores
-the caller's settings after all concurrent fits finish. Set
-`WMA_CPU_BLAS_THREADS=0` to disable this cap or a positive value to choose its
-ceiling. Float64 embedding roundoff can differ from multithreaded BLAS within
-the existing numerical tolerance. CUDA nearest-centroid distances also use
-smaller blocks for short embeddings, preserving exact observed values and indices.
-See the [BLAS and CUDA tile measurements](doc/gpu/progress-2026-10-15-blas-control.md).
+See [acceleration, performance and validation](doc/acceleration.md) for the
+current execution model, cache controls, numerical checks and benchmark commands.
 
 ## 3D Slicer extension
 
@@ -150,54 +76,27 @@ extension. This ZIP is not an Extensions Manager "Install from file" archive.
 Remove an older WMAGPU release and restart before installing.
 See [installation instructions](slicer/WMAGPU/README.md#installation-and-use).
 
-The extension provides Pipeline, moving-to-fixed/atlas registration, groupwise registration, atlas
-building, and cluster merge/MRML export. Pipeline includes atlas labeling; uncheck
-registration when the input tractography is already registered. It bundles WMA and its pure
-Python helpers; CPU mode requires no separate WMA or PyTorch installation.
-GPU setup is optional: enable **Allow downloading and installing CUDA PyTorch into Slicer**,
-click **Check / Install PyTorch**, and restart after completion. This installs into
-Slicer's Python; installing PyTorch in Conda does not enable it in Slicer.
+The five workflows cover Pipeline, moving-to-fixed/atlas registration, groupwise
+registration, atlas building, and selected-node merging. CPU mode needs no
+PyTorch; optional CUDA installation targets Slicer's own Python. Registration
+retains Transform nodes, and Pipeline can display anatomical tracts or save
+results without loading them.
 
-The installer adapts the layout to the detected Slicer version. Actual application
-validation is currently Linux Slicer 5.2.2; Windows/macOS and newer Slicer versions
-require native validation. macOS/ARM use CPU mode; CUDA setup targets Linux/Windows x86_64. GUI registration supports the CLI presets, rigid, affine, nonrigid, and custom
-multiscale schedules, retaining final Slicer Transform nodes. Merge tools offer
-checkbox selection with named folders or one combined tractography node. Full ORG
-anatomical Pipeline validation requires actual atlas data.
-See [extension installation, dependencies, packaging, and tests](slicer/WMAGPU/README.md).
+The installer adapts to Slicer's version and platform. Native validation is
+Linux Slicer 5.2.2; Windows/macOS and newer Slicer versions require native checks.
+macOS/ARM use CPU mode; automatic CUDA setup targets Linux/Windows x86_64.
+See the [extension guide](slicer/WMAGPU/README.md) for installation, GPU selection,
+registration methods, output visualization, dependencies and packaging.
 
-Workflow pages load computation libraries on demand, so opening the extension
-does not initialize PyTorch, SciPy, or Matplotlib. Successful environment checks
-are reused across pages. Registration reuses unchanged length-filtered inputs,
-and scene merging batches hierarchy updates and checklist refreshes. See the
-[startup and processing measurements](doc/gpu/progress-2026-10-14.md).
+# Documentation and command-line use
 
-# WMA Installation and Usage
-## 1. Install Python 3:
-
-Miniconda is a nice option because it includes pip, setuptools, and all library dependencies (such as VTK and scipy).
-
-  - Download and install Miniconda from https://conda.io/miniconda.html
-
-## 2. Install whitematteranalysis with pip:
-
-The following command will use pip to install whitematteranalysis from this source repository and all library dependencies:
-
-```shell
-$ python -m pip install git+https://github.com/yishengpoxiao/whitematteranalysis_gpu.git
-```
-
-Note: On macOS, to be able to use `pip`, `X-code` needs to be installed using `$ xcode-select --install`.
-
-Run `$ wm_quality_control_tractography.py --help` to test if the installation is successful.
-
-## 3. Documentation
+Run `wm_quality_control_tractography.py --help` to check the CLI installation.
 
 The upstream `whitematteranalysis` documentation can be found at
 https://whitematteranalysis.readthedocs.io/en/latest/.
-GPU and Slicer extension behavior specific to this fork is documented above.
+Use the guides above for acceleration and Slicer behavior specific to this fork.
 
-* A master shell script `wm_apply_ORG_atlas_to_subject.sh` (see code [here](https://github.com/SlicerDMRI/whitematteranalysis/blob/73a7948751f49d9fda8ec84fb5caeecaeeb92621/bin/wm_apply_ORG_atlas_to_subject.sh#L1-L40)) is provided to apply an anatomically curated white matter atlas ([the ORG atlas](https://dmri.slicer.org/atlases/)), along with the computation tools provided in whitematteranalysis, to perform subject-specific tractography parcellation.
+* A master shell script `wm_apply_ORG_atlas_to_subject.sh` (see code [here](bin/wm_apply_ORG_atlas_to_subject.sh)) is provided to apply an anatomically curated white matter atlas ([the ORG atlas](https://dmri.slicer.org/atlases/)), along with the computation tools provided in whitematteranalysis, to perform subject-specific tractography parcellation.
 
 ```shell
 $ wm_apply_ORG_atlas_to_subject.sh \
