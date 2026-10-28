@@ -7,7 +7,7 @@ This fork adds CUDA GPU acceleration, a vectorized CPU backend, and a five-modul
 ## Full-pipeline performance
 
 On **2026-10-28**, the C028 whole-brain input of approximately
-**330,000 streamlines (3.6 GB)** was processed using source revision `e5abd52`
+**330,000 streamlines (3.6 GB)** was processed using source revision `a698f51`
 through `wm_apply_ORG_atlas_to_subject.sh` with ORG-800FC-100HCP and
 ORG-RegAtlas-100HCP. All three modes use the same updated source, four physical
 CPU cores, `-n 4 -r rig -x 1 -c 0`, standard sampling seed 1000, and float64.
@@ -15,18 +15,18 @@ Hardware: Intel Xeon Gold 6330 and one NVIDIA RTX 4090; Linux, Python 3.8,
 PyTorch 2.4.1/CUDA 12.1 and Slicer 5.2.2 with SlicerDMRI. CUDA 12.1 is the
 benchmark environment, not a WMA requirement.
 
-Total runtime: original joblib **31.15 min**, CPU matrix **6.08 min** (**5.12x** speedup), and GPU **6.11 min** (**5.09x** speedup).
+Total runtime: original joblib **27.48 min**, CPU matrix **5.90 min** (**4.65x** speedup), and GPU **2.98 min** (**9.23x** speedup).
 
 | Step | Joblib (4 workers), s | CPU matrix, s | CPU speedup | GPU, s | GPU speedup |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Registration (rigid + affine) | 391.5 | 94.5 | 4.14x | 163.8 | 2.39x |
-| Atlas labeling and cluster saving | 1159.3 | 96.5 | 12.01x | 73.2 | 15.84x |
-| Outlier removal | 223.7 | 95.7 | 2.34x | 31.9 | 7.01x |
-| Hemisphere assessment | 15.7 | 18.8 | 0.84x | 14.1 | 1.11x |
-| Inverse transform with Slicer | 51.8 | 33.4 | 1.55x | 55.0 | 0.94x |
-| Hemisphere separation | 9.0 | 9.2 | 0.98x | 9.0 | 1.01x |
-| Anatomical tract assembly | 15.7 | 14.9 | 1.06x | 16.5 | 0.95x |
-| **Total** | **1868.9** | **364.7** | **5.12x** | **366.9** | **5.09x** |
+| Registration (rigid + affine) | 371.4 | 106.4 | 3.49x | 25.7 | 14.46x |
+| Atlas labeling and cluster saving | 1001.2 | 95.6 | 10.47x | 25.5 | 39.19x |
+| Outlier removal | 201.6 | 82.2 | 2.45x | 28.5 | 7.08x |
+| Hemisphere assessment | 15.6 | 14.4 | 1.09x | 24.3 | 0.64x |
+| Inverse transform with Slicer | 32.7 | 30.1 | 1.09x | 47.4 | 0.69x |
+| Hemisphere separation | 9.0 | 8.8 | 1.03x | 8.8 | 1.03x |
+| Anatomical tract assembly | 15.0 | 14.9 | 1.01x | 15.0 | 1.00x |
+| **Total** | **1648.7** | **354.2** | **4.65x** | **178.6** | **9.23x** |
 
 Speedup is joblib time divided by the corresponding accelerated time. Original
 joblib means the original per-fiber mathematical backend within the current
@@ -64,23 +64,32 @@ this joblib run:
   **4.77e-7 mm**. These floating differences pass
   `rtol=1e-6, atol=1e-5` for coordinates and `rtol=1e-10, atol=1e-10` for transforms.
 
-The GPU registration and labeling stages were slower in this complete run than
-in the October 15 run (39.1 s and 30.7 s). Subsequent instrumented runs of the
-same current code measured registration at **55.9 s and 36.2 s** and labeling at
-**32.9 s and 32.8 s**, using the pipeline's LZ4 output compression. Labeling
-computation itself took **3.8 s and 3.7 s**; the rest includes imports, input
-reading, filtering, splitting and writing 800 clusters. A separate repeated-read
-control spent **125.4 s versus 2.5 s** reading the same registered VTK. Registration
-profiling also showed atlas CPU preprocessing varying from **19.4 s to 5.0 s**,
-while the ten GPU optimizer calls totaled about 3–4 s. Delaying the CUDA availability
-check did not consistently improve registration time.
+The new joblib run was also compared against the previous C028 joblib run
+(`e5abd52`): all 4,874 VTPs, the full registered VTK and all 11 transform files
+are byte-identical. This checks that the shared I/O and preprocessing changes
+preserve the earlier result as well as agreement between the three new modes.
 
-These controls found substantial host-side I/O and preparation variability, with
-no repeatable GPU computation regression. The original complete run did not log
-per-function durations, so its extra time cannot be assigned precisely after
-the fact. The table retains the actual complete-run measurements; isolated
-repeats are not substituted into stage times or totals. In this run CPU matrix
-and GPU total times were effectively tied.
+Registration now caches eligible fiber indices and copies only the sampled
+fibers. Bulk selections fill VTK-owned arrays in batches, avoiding full-sized
+temporary coordinate/attribute copies. Geometry-only atlas reads skip unneeded
+attributes and reuse XML readers without deep-copying their geometry; returned
+outputs remain independent of later reads.
+
+Separate alternating-order C028 controls with all attributes retained and a
+40–260 mm length filter measured preprocessing at **46.2–57.0 s before** and
+**3.29–3.32 s after** these changes. Filtering the registration atlas at 75 mm
+and sampling 1,000 fibers fell from **2.61–2.72 s to 0.051–0.052 s**. These are
+isolated controls, not replacement timings for the complete-run table.
+
+In the complete runs, labeling preprocessing took **3.50 / 3.32 / 3.48 s** for
+joblib / CPU matrix / GPU. All 20 GPU registration filtering-and-sampling calls
+totaled **0.54 s**, and GPU labeling computation itself took **3.11 s**; reading,
+splitting, saving and startup account for the remaining stage time. File-read
+wall time still varied on this shared workstation: reading the original subject took
+**58.1 s** in the CPU matrix run, versus **2.4 s and 2.3 s** in joblib and GPU.
+That wait remains included in the measured CPU total. These changes reduce
+unnecessary allocations and copying; the cause of this particular read delay
+was not isolated.
 
 An additional correctness audit sampled **2,048 C028 fibers** using the current
 code and the trained ORG atlas settings. CPU matrix and GPU float64 labels both
