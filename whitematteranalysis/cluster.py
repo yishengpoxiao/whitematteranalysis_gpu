@@ -113,6 +113,8 @@ class ClusterAtlas:
             atlas = pickle.load(open(fname_atlas,'rb'))
         except UnicodeDecodeError:
             atlas = pickle.load(open(fname_atlas,'rb'), encoding="latin1")
+        if not isinstance(getattr(atlas, 'bilateral', None), (bool, numpy.bool_)):
+            raise ValueError("Atlas must specify a Boolean bilateral field; rebuild the atlas with wm_cluster_atlas.py.")
         atlas.nystrom_polydata = io.read_polydata(fname_polydata)
         print(f"<{os.path.basename(__file__)}> Loaded atlas", atlas_name, "from", directory, ".")
         print(f"<{os.path.basename(__file__)}> Atlas Nystrom polydata sample:", atlas.nystrom_polydata.GetNumberOfLines(), \
@@ -126,8 +128,6 @@ class ClusterAtlas:
         # this is an atlas from pre 1.0 version code. Set to default values.
         if not hasattr(atlas, 'distance_method'):    
             atlas.distance_method = 'Hausdorff'
-        if not hasattr(atlas, 'bilateral'):    
-            atlas.bilateral = 'False'
 
         if verbose:
             pprint (vars(atlas))

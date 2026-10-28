@@ -72,6 +72,32 @@ def _gather_conn(conn, offsets, keep_indices):
     return conn[idx], out_offsets
 
 
+def _mean_nearest_neighbor_distance(distances):
+    """Mean of the three smallest non-self distances in each row.
+
+    With fewer than four fibers, use all available non-self neighbors. A
+    lone fiber has no neighbors and is treated as an outlier.
+    """
+
+    distances = numpy.asarray(distances)
+    number_of_fibers = distances.shape[-1]
+    output_shape = distances.shape[:-1]
+    if number_of_fibers == 0:
+        return numpy.empty(0, dtype=numpy.float64)
+    if number_of_fibers == 1:
+        return numpy.full(output_shape, numpy.inf, dtype=numpy.float64)
+
+    count = min(3, number_of_fibers - 1)
+    nearest = numpy.partition(distances, count, axis=-1)[..., :count + 1]
+    nearest.sort(axis=-1)
+    neighbors = nearest[..., 1:]
+    if count == 3:
+        # Keep the original left-to-right addition order for exact cutoff parity.
+        total = (neighbors[..., 0] + neighbors[..., 1]) + neighbors[..., 2]
+        return numpy.asarray(total, dtype=numpy.float64) / 3.0
+    return neighbors.mean(axis=-1, dtype=numpy.float64)
+
+
 def add_point_data_array(inpd, data, array_name):
     """Make a vtk point data array from input data array and add to inpd.
 
@@ -781,16 +807,20 @@ def remove_outliers(inpd, min_fiber_distance, n_jobs=0, distance_method ='Mean')
     min_fiber_distance = min_fiber_distance * min_fiber_distance
     
     # pairwise distance matrix
+    distances_matrix = None
     if gpu.use_gpu() and gpu.distance.distance_supported(distance_method):
         print(f"<{os.path.basename(__file__)}> Computing pairwise distances on GPU.")
-        distances = gpu.distance.pairwise_distance_matrix_from_fiber_array(
+        distances_matrix = gpu.distance.pairwise_distance_matrix_from_fiber_array(
             fiber_array, 0, distance_method=distance_method)
-    elif gpu.config.cpu_fast_enabled() and gpu.distance.distance_supported(distance_method):
+    elif gpu.config.cpu_fast_enabled() and gpu.fiber_tensors.distance_supported(distance_method):
         print(f"<{os.path.basename(__file__)}> Computing pairwise distances with the vectorized CPU backend.")
-        distances = gpu.cpu_backend.pairwise_distance_matrix_from_fiber_array(
-            fiber_array, 0, distance_method=distance_method)
+        coordinates = gpu.fiber_tensors.fiber_array_to_numpy(
+            fiber_array, coordinate_major=True)
+        distances_matrix = gpu.cpu_backend._distance_matrix(
+            coordinates, coordinates, 0, distance_method=distance_method,
+            number_of_jobs=n_jobs if n_jobs > 0 else 1)
     elif USE_PARALLEL and n_jobs > 0:
-        distances = Parallel(n_jobs=n_jobs, verbose=1)(
+        distances_matrix = Parallel(n_jobs=n_jobs, verbose=1)(
             delayed(similarity.fiber_distance)(
                 fiber_array.get_fiber(lidx),
                 fiber_array,
@@ -798,15 +828,7 @@ def remove_outliers(inpd, min_fiber_distance, n_jobs=0, distance_method ='Mean')
                 distance_method = distance_method)
             for lidx in fiber_indices)
 
-        distances = numpy.array(distances)
-
-        # now we check where there are no nearby fibers in d
-        mindist = numpy.zeros(fiber_array.number_of_fibers)
-        for lidx in fiber_indices:
-            dist = numpy.sort(distances[lidx, :])
-            # robust minimum distance
-            mindist[lidx] = (dist[1] + dist[2] + dist[3]) / 3.0
-            #mindist[lidx] = (dist[1] + dist[2]) / 2.0
+        distances_matrix = numpy.array(distances_matrix)
 
     else:
         # do this in a loop to use less memory. then parallelization can 
@@ -814,9 +836,10 @@ def remove_outliers(inpd, min_fiber_distance, n_jobs=0, distance_method ='Mean')
         mindist = numpy.zeros(fiber_array.number_of_fibers)
         for lidx in fiber_indices:
             distances = similarity.fiber_distance(fiber_array.get_fiber(lidx), fiber_array, 0,  distance_method = distance_method)
-            dist = numpy.sort(distances)
-            # robust minimum distance
-            mindist[lidx] = (dist[1] + dist[2] + dist[3]) / 3.0
+            mindist[lidx] = _mean_nearest_neighbor_distance(distances)
+
+    if distances_matrix is not None:
+        mindist = _mean_nearest_neighbor_distance(distances_matrix)
             
     # keep only fibers who have nearby similar fibers
     fiber_mask = mindist < min_fiber_distance

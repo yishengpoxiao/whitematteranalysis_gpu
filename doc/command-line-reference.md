@@ -373,6 +373,9 @@ labels determine the file count; some subject clusters may contain no fibers.
 [Source](../bin/wm_cluster_remove_outliers.py). Remove low-probability subject
 fibers using the matching atlas cluster distributions. Independent clusters can
 be processed concurrently; accelerated atlas statistics are cached for reuse.
+Atlas and subject `cluster_*.vtp` filename sets must match exactly. Missing,
+unexpected or absent atlas clusters cause an error before any output is written;
+matching file counts alone are insufficient.
 
 | Argument | Default / requirement | Meaning |
 | --- | --- | --- |

@@ -67,12 +67,23 @@ def main():
     wma.gpu.apply_gpu_arguments(args)
     
     if not os.path.isdir(args.inputDirectory):
-        print(f"<{os.path.basename(__file__)}> Error: Input subject directory", args.inputDirectory, "does not exist.")
-        exit()
+        parser.error("Input subject directory does not exist: " + args.inputDirectory)
     
     if not os.path.isdir(args.atlasDirectory):
-        print(f"<{os.path.basename(__file__)}> Error: Atlas directory", args.atlasDirectory, "does not exist.")
-        exit()
+        parser.error("Atlas directory does not exist: " + args.atlasDirectory)
+
+    atlas_clusters = sorted(glob.glob(os.path.join(args.atlasDirectory, 'cluster_*.vtp')))
+    subject_clusters = sorted(glob.glob(os.path.join(args.inputDirectory, 'cluster_*.vtp')))
+    atlas_names = {os.path.basename(path) for path in atlas_clusters}
+    subject_names = {os.path.basename(path) for path in subject_clusters}
+    if not atlas_names:
+        parser.error("No atlas cluster_*.vtp files found in " + args.atlasDirectory)
+    if atlas_names != subject_names:
+        parser.error("Cluster filename mismatch: missing subject clusters %s; unexpected subject clusters %s"
+                     % (sorted(atlas_names - subject_names)[:5],
+                        sorted(subject_names - atlas_names)[:5]))
+    number_ac = len(atlas_clusters)
+    print("Number of atlas and subject clusters:", number_ac, len(subject_clusters))
     
     outdir = args.outputDirectory
     if not os.path.exists(outdir):
@@ -139,23 +150,6 @@ def main():
     ## atlas.cluster_std_similarity = cluster_std_similarity
     ## atlas.brain_mean_similarity = brain_mean_sim
     ## atlas.brain_std_similarity = brain_std_sim
-    
-    # find clusters in subject and atlas input directories
-    input_mask = f"{args.atlasDirectory}/cluster_*.vtp"
-    atlas_clusters = sorted(glob.glob(input_mask))
-    input_mask = f"{args.inputDirectory}/cluster_*.vtp"
-    subject_clusters = sorted(glob.glob(input_mask))
-
-    # check these lists are the same length
-    number_ac = len(atlas_clusters)
-    number_sc = len(subject_clusters)
-    
-    print("Number of atlas and subject clusters:", number_ac, number_sc)
-    
-    if number_ac != number_sc:
-        print(f"<{os.path.basename(__file__)}> Error: Cluster number mismatch. \nAtlas directory (", args.atlasDirectory, ") has", number_ac, "clusters but subject directory (", args.inputDirectory, ") has", number_sc, "clusters.")
-        exit()
-    
     
     # Loop over all clusters in atlas and subject. Remove outliers in the subject cluster using the same heuristics as during atlas creation.
     print("Starting local cluster outlier removal")

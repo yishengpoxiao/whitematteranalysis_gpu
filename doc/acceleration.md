@@ -63,6 +63,14 @@ Source: [CPU labeling](../whitematteranalysis/gpu/cpu_backend.py),
   across subjects. Cache identity includes atlas file metadata, numerical
   settings, backend/precision, library versions and implementation identity.
   Subject-dependent comparisons are always recomputed.
+- The generic `filter.remove_outliers` API also uses CPU/GPU distance matrices.
+  Partial selection finds the three nearest neighbors without sorting every
+  distance, while preserving the original summation order and rejection cutoff.
+  For two or three fibers it uses the available neighbors; a singleton is rejected.
+
+The atlas-based CLI requires identical subject/atlas cluster filenames before
+writing outputs. Atlas loading requires a Boolean `bilateral` field; missing or
+string-valued settings are rejected instead of silently changing reflection.
 
 The README comparison starts with empty accelerated reference caches. Later
 subjects may benefit from a warm cache; that benefit is not added to the reported
@@ -96,3 +104,30 @@ The README records the actual comparison against joblib, including small GPU
 coordinate/transform differences; it does not claim universal byte identity.
 `-gpu_float32` is an explicit speed/accuracy tradeoff and can change near-tie
 labels. Filesystem and rendering work remain CPU operations.
+
+The correctness audit uses seed `20261028` to select 2,048 fibers from the saved
+C028 joblib registered tractogram. With the trained ORG atlas parameters, both
+accelerated label arrays match joblib exactly. Maximum embedding differences
+are `3.11e-15` (CPU) and `1.78e-14` (GPU). Estimated row sums differ by at most
+`2.98e-8` and `5.54e-8`, respectively; these are large intermediate sums, with
+errors relative to their maximum magnitude below `5.12e-14`. All checked
+continuous outputs pass `rtol=1e-10, atol=1e-10`.
+
+Independent comparisons against the upstream `similarity.py` use 128 query by
+64 reference fibers, 15 points per fiber, all four supported distance methods,
+both bilateral settings and thresholds 0 and 2. CPU distances are exact; GPU
+maximum absolute error is `7.28e-12`. An affine objective with 128 moving and
+64 fixed fibers matches the upstream value exactly on both backends. These
+sampled checks supplement the earlier full-output comparison; they do not
+establish accuracy for every input or for optional float32 mode.
+
+Regression tests additionally exercise cutoff-sensitive masks, empty inputs,
+one-to-three-fiber neighborhoods, atlas validation, explicit GPU failure, fused
+and eager kernels, B-splines, file metadata and Slicer workflows. Float64 retains
+unit coordinate differences even around `1e8`; float32 can erase those differences
+and remains opt-in. Explicit `-gpu on` now requires usable CUDA rather than
+silently falling back to CPU.
+
+The audit's final run of `python -m pytest tests slicer/WMAGPU/Testing -q -rs`
+passed 117 tests on one RTX 4090 with PyTorch 2.4.1, Triton 3.0.0 and float64
+defaults. Four device-selection tests requiring two visible GPUs were skipped.

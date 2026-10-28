@@ -104,8 +104,12 @@ def use_gpu(requested=None):
         r = None if r.strip().lower() in ('auto', '') else True
     if r is False:
         return False
-    # r is True or None (auto): both require a working CUDA device.
-    return config.cuda_available()
+    available = config.cuda_available()
+    if r is True and not available:
+        raise RuntimeError(
+            "GPU acceleration was explicitly requested, but CUDA is unavailable. "
+            "Use -gpu auto or -gpu off to run without CUDA.")
+    return available
 
 
 def float32_enabled(requested=None):
@@ -179,6 +183,8 @@ def apply_gpu_arguments(args):
     devices = getattr(args, 'gpuDevices', None)
     if devices:
         set_devices(devices)
+    if config.requested is True:
+        use_gpu()
 
 
 _from_env()

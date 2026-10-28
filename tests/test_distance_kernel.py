@@ -9,6 +9,30 @@ from whitematteranalysis.gpu import distance, distance_kernel
 
 @unittest.skipUnless(wma.gpu.available(), 'CUDA is required')
 class DistanceKernelTests(unittest.TestCase):
+    def test_empty_public_matrices(self):
+        from test_atlas_blocks import polydata
+        empty, populated = polydata(0), polydata(3)
+        for method in distance.SUPPORTED_DISTANCE_METHODS:
+            result = distance.pairwise_distance_matrix(empty, 0., distance_method=method)
+            self.assertEqual(result.shape, (0, 0))
+            for queries, fixed, shape in ((empty, populated, (0, 3)),
+                                          (populated, empty, (3, 0))):
+                result = distance.rectangular_distance_matrix(
+                    queries, fixed, 0., distance_method=method)
+                self.assertEqual(result.shape, shape)
+
+    def test_float64_preserves_small_differences_at_large_offsets(self):
+        queries = np.full((1, 15, 3), 1e8)
+        fixed = queries.copy()
+        fixed[:, :, 0] += 1.
+        for method in ('Mean', 'MeanSquared', 'Hausdorff'):
+            precise = distance.distance_matrix_from_arrays(
+                queries, fixed, 0., distance_method=method, gpu_float32=False)
+            np.testing.assert_array_equal(precise, [[1.]])
+            approximate = distance.distance_matrix_from_arrays(
+                queries, fixed, 0., distance_method=method, gpu_float32=True)
+            np.testing.assert_array_equal(approximate, [[0.]])
+
     def test_gaussian_similarities_match_frozen_backend(self):
         import torch
         from test_output_pipeline import baseline_module

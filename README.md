@@ -57,6 +57,16 @@ this joblib run:
   original attribute bytes exactly. These floating differences pass
   `rtol=1e-6, atol=1e-5` for coordinates and `rtol=1e-10, atol=1e-10` for transforms.
 
+An additional correctness audit sampled **2,048 C028 fibers** using the current
+code and the trained ORG atlas settings. CPU matrix and GPU float64 labels both
+matched joblib exactly; maximum embedding differences were `3.11e-15` and
+`1.78e-14`, respectively. Across 16 distance-method/bilateral/threshold settings
+on real fibers, CPU distances matched upstream exactly and the maximum GPU
+absolute difference was `7.28e-12`. The sampled affine objective matched upstream
+exactly for both backends. These are focused checks, not new full-pipeline runs;
+see [numerical behavior](doc/acceleration.md#numerical-behavior) for validation
+scope and tolerances.
+
 ### Final-stage scheduling check
 
 A separate control reused identical saved C028 intermediates (800 clusters,
@@ -122,6 +132,7 @@ Linux / Python 3.8 and Slicer 5.2.2 / Python 3.9 were tested; Windows has not be
 | Setting | Behavior |
 |---|---|
 | `WMA_GPU=auto` (default) | Use available CUDA; otherwise use accelerated CPU |
+| `WMA_GPU=on` | Require CUDA; raise an error if unavailable |
 | `WMA_GPU=off` | Use CPU |
 | `WMA_GPU=off`, `WMA_CPU_FAST=0` | Use the original per-fiber CPU implementation |
 | `WMA_GPU_DEVICES=0,1` | Select visible CUDA device indices for supported multi-GPU operations |
@@ -131,6 +142,8 @@ Linux / Python 3.8 and Slicer 5.2.2 / Python 3.9 were tested; Windows has not be
 These environment variables apply to the Python/CLI backend. Slicer pages provide
 their own Backend selection. Some CLI tools also expose `-gpu auto|on|off`,
 `-gpu_float32`, and `-gpu_devices`; check the individual tool's `--help`.
+For those tools, use `-gpu on` explicitly: their default `-gpu auto` overrides
+`WMA_GPU`. An explicit GPU request fails before processing if CUDA is unavailable.
 
 The accelerated CPU backend streams distance/similarity tiles and honors CPU
 affinity. CUDA performs distance, probability, embedding and centroid operations
