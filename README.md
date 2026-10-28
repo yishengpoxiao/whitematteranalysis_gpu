@@ -6,16 +6,12 @@ This fork adds CUDA GPU acceleration, a vectorized CPU backend, and a five-modul
 
 ## Full-pipeline performance
 
-On **2026-10-28**, the C028 whole-brain input of approximately
-**330,000 streamlines (3.6 GB)** was processed using source revision `a698f51`
-through `wm_apply_ORG_atlas_to_subject.sh` with ORG-800FC-100HCP and
-ORG-RegAtlas-100HCP. All three modes use the same updated source, four physical
-CPU cores, `-n 4 -r rig -x 1 -c 0`, standard sampling seed 1000, and float64.
-Hardware: Intel Xeon Gold 6330 and one NVIDIA RTX 4090; Linux, Python 3.8,
-PyTorch 2.4.1/CUDA 12.1 and Slicer 5.2.2 with SlicerDMRI. CUDA 12.1 is the
-benchmark environment, not a WMA requirement.
-
-Total runtime: original joblib **27.48 min**, CPU matrix **5.90 min** (**4.65x** speedup), and GPU **2.98 min** (**9.23x** speedup).
+On **2026-10-28**, source revision `a698f51` processed C028 (approximately
+**330,000 streamlines, 3.6 GB**) using `wm_apply_ORG_atlas_to_subject.sh`,
+ORG-800FC-100HCP and ORG-RegAtlas-100HCP. All modes used four physical CPU cores,
+`-n 4 -r rig -x 1 -c 0`, seed 1000 and float64. Hardware: Intel Xeon Gold 6330
+and one RTX 4090; Python 3.8, PyTorch 2.4.1/CUDA 12.1, Slicer 5.2.2 + SlicerDMRI.
+CUDA 12.1 is the benchmark environment, not a requirement.
 
 | Step | Joblib (4 workers), s | CPU matrix, s | CPU speedup | GPU, s | GPU speedup |
 | --- | ---: | ---: | ---: | ---: | ---: |
@@ -28,103 +24,32 @@ Total runtime: original joblib **27.48 min**, CPU matrix **5.90 min** (**4.65x**
 | Anatomical tract assembly | 15.0 | 14.9 | 1.01x | 15.0 | 1.00x |
 | **Total** | **1648.7** | **354.2** | **4.65x** | **178.6** | **9.23x** |
 
-Speedup is joblib time divided by the corresponding accelerated time. Original
-joblib means the original per-fiber mathematical backend within the current
-pipeline; common file/I/O improvements are shared by all modes. Four workers
-apply where the original algorithm supports parallelism. Each mode starts in a
-fresh output directory; accelerated atlas-reference caches start empty. Runs
-were sequential: joblib, CPU matrix, then GPU. CPU affinity was cores 0–3,
-with four WMA workers and one thread per BLAS/OpenMP library; the GPU profile
-used physical device 4 with no competing CUDA process observed on that device.
+Totals: **27.48 min** (joblib), **5.90 min** (CPU matrix), **2.98 min** (GPU).
+Speedups are relative to joblib's original per-fiber mathematical backend within
+the current pipeline; shared I/O improvements apply to all modes. These were
+single sequential runs with fresh outputs and empty atlas caches, four WMA
+workers and one thread per BLAS/OpenMP library. Totals include I/O, startup and
+Slicer processing; filesystem caches and workstation load were not reset.
+The final four stages use identical CPU/Slicer code across modes.
 
-These are single complete runs on a shared workstation, including reading,
-writing, process startup and Slicer transform hardening. Filesystem/JIT caches
-and workstation load are not reset; file/scene stages remain CPU operations.
-Total time includes shell overhead and can differ slightly from the stage sum.
-The final four stages use the same CPU/Slicer implementations in every profile;
-their per-run timing differences are not measurements of different mathematical
-backends. See the [acceleration overview](doc/acceleration.md) for the changes
-behind the registration, labeling and outlier-removal speedups.
-Interactive display and optional diffusion-measure export are excluded.
-All runs produce 800 initial, outlier-removed and transformed cluster files plus
-74 anatomical tracts, with identical counts of 245,946 initial fibers, 130,737
-retained fibers and 93,766 fibers across the anatomical outputs.
-Validation compares every cluster/tract VTP, all hemisphere
-splits, the full registered tractogram and all 11 saved ITK transforms against
-this joblib run:
+All modes produced 800 initial, outlier-removed and transformed clusters plus
+74 anatomical tracts (245,946 initial fibers, 130,737 retained, 93,766 anatomical).
+Validation covered all **4,874 VTPs**, the full registered tractogram and
+**11 transforms**:
 
-- **CPU matrix:** all 4,874 VTP files and the registered VTK are byte-identical;
-  all 11 transform parameter sets match exactly.
-- **GPU:** cluster membership, counts, topology, active data attributes and all
-  point/cell/field data values match exactly. Of 4,874 VTPs, 4,794 are
-  byte-identical; the remaining 80 differ only in coordinates. Maximum coordinate
-  difference is **1.91e-6 mm**, and maximum saved transform-parameter difference
-  is **3.30e-13**. The full registered VTK also preserves connectivity and
-  original attribute bytes exactly, with a maximum coordinate difference of
-  **4.77e-7 mm**. These floating differences pass
-  `rtol=1e-6, atol=1e-5` for coordinates and `rtol=1e-10, atol=1e-10` for transforms.
+- **CPU matrix:** byte-identical VTP/VTK outputs and exact transform parameters.
+- **GPU:** identical membership, connectivity and attributes; maximum coordinate
+  difference **1.91e-6 mm**, maximum transform-parameter difference **3.30e-13**.
+  All passed coordinate tolerances `rtol=1e-6, atol=1e-5` and transform tolerances
+  `rtol=1e-10, atol=1e-10`.
+- The new joblib outputs were also byte-identical to the previous `e5abd52` run.
 
-The new joblib run was also compared against the previous C028 joblib run
-(`e5abd52`): all 4,874 VTPs, the full registered VTK and all 11 transform files
-are byte-identical. This checks that the shared I/O and preprocessing changes
-preserve the earlier result as well as agreement between the three new modes.
-
-Registration now caches eligible fiber indices and copies only the sampled
-fibers. Bulk selections fill VTK-owned arrays in batches, avoiding full-sized
-temporary coordinate/attribute copies. Geometry-only atlas reads skip unneeded
-attributes and reuse XML readers without deep-copying their geometry; returned
-outputs remain independent of later reads.
-
-Separate alternating-order C028 controls with all attributes retained and a
-40–260 mm length filter measured preprocessing at **46.2–57.0 s before** and
-**3.29–3.32 s after** these changes. Filtering the registration atlas at 75 mm
-and sampling 1,000 fibers fell from **2.61–2.72 s to 0.051–0.052 s**. These are
-isolated controls, not replacement timings for the complete-run table.
-
-In the complete runs, labeling preprocessing took **3.50 / 3.32 / 3.48 s** for
-joblib / CPU matrix / GPU. All 20 GPU registration filtering-and-sampling calls
-totaled **0.54 s**, and GPU labeling computation itself took **3.11 s**; reading,
-splitting, saving and startup account for the remaining stage time. File-read
-wall time still varied on this shared workstation: reading the original subject took
-**58.1 s** in the CPU matrix run, versus **2.4 s and 2.3 s** in joblib and GPU.
-That wait remains included in the measured CPU total. These changes reduce
-unnecessary allocations and copying; the cause of this particular read delay
-was not isolated.
-
-An additional correctness audit sampled **2,048 C028 fibers** using the current
-code and the trained ORG atlas settings. CPU matrix and GPU float64 labels both
-matched joblib exactly; maximum embedding differences were `3.11e-15` and
-`1.78e-14`, respectively. Across 16 distance-method/bilateral/threshold settings
-on real fibers, CPU distances matched upstream exactly and the maximum GPU
-absolute difference was `7.28e-12`. The sampled affine objective matched upstream
-exactly for both backends. These are focused checks, not new full-pipeline runs;
-see [numerical behavior](doc/acceleration.md#numerical-behavior) for validation
-scope and tolerances.
-
-### Final-stage scheduling check
-
-An earlier, separate control reused identical saved C028 intermediates (800 clusters,
-about 131,000 retained fibers) to compare one worker with four workers. Values
-below are the median of two runs per setting, with execution order reversed,
-the same four-core affinity and fresh outputs. Hemisphere labels were removed
-from input copies before assessment so that the calculation ran again. Input
-preparation and output validation are outside the timed commands; process
-startup and stage I/O are included. Filesystem caches were not flushed.
-
-| Step | One worker, s | Four workers, s |
-| --- | ---: | ---: |
-| Hemisphere assessment | 37.4 | 14.5 |
-| Inverse transform with Slicer | 86.9 | 29.8 |
-| Hemisphere separation | 31.6 | 9.1 |
-| Anatomical tract assembly | 48.8 | 15.2 |
-
-Four workers were faster in every stage, so the current parallel implementation
-is retained. A four-thread control was also slower for the three Python file
-stages; inverse transformation already launches independent Slicer processes.
-All VTP outputs in the 22 stage runs were byte-identical to the corresponding saved
-joblib results. The one-worker control uses the current geometry/I/O functions
-with serial scheduling; it is not a benchmark of an unmodified upstream checkout.
-These are isolated-stage measurements, not replacement full-pipeline totals.
+The CPU total retains its measured **58.1 s** input read. Later read-only tests
+reproduced disk/page-cache waits in joblib too; cached reads took **2.3–2.5 s**
+across all modes. Large-file OS read-ahead reduced partial-cache waits in separate
+controls (`WMA_IO_PREFETCH=0` disables it). The full-pipeline table has not been
+adjusted using isolated read tests. See the [acceleration overview](doc/acceleration.md)
+for implementation and numerical validation details.
 
 # GPU and 3D Slicer quick start
 

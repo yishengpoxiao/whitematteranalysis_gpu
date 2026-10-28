@@ -36,12 +36,35 @@ VERBOSE = 0
 _geometry_readers = local()
 
 
+def _prefetch_file(filename):
+    """Queue large-file cache misses before VTK's synchronous array reads."""
+    if not hasattr(os, 'posix_fadvise') or os.environ.get('WMA_IO_PREFETCH') == '0':
+        return
+    try:
+        size = os.path.getsize(filename)
+        if size < 64 * 1024 * 1024:
+            return
+        # Small ranges avoid the kernel's per-call readahead cap. No extra
+        # user-space buffer or pinned memory is allocated; pages stay reclaimable.
+        chunk = 1024 * 1024
+        with open(filename, 'rb') as stream:
+            for offset in range(0, size, chunk):
+                os.posix_fadvise(stream.fileno(), offset, min(chunk, size - offset),
+                                 os.POSIX_FADV_WILLNEED)
+    except OSError:
+        # Advice is optional: unsupported filesystems and normal read errors
+        # are handled by the existing VTK reader below.
+        pass
+
+
 def read_polydata(filename, progress_callback=None, geometry_only=False):
     """Read tractography; optionally discard attributes for reference geometry.
 
     XML geometry reads reuse a reader per thread and skip point/cell arrays.
     Returned geometry remains independent of later reads. Legacy VTK
     attributes are discarded after reading; default reads retain attributes.
+    Large full-attribute reads receive best-effort OS readahead where supported. Set
+    WMA_IO_PREFETCH=0 to disable it.
     """
 
     if VERBOSE:
@@ -64,6 +87,8 @@ def read_polydata(filename, progress_callback=None, geometry_only=False):
         print('Cannot recognize model file format')
         return None
 
+    if not geometry_only:
+        _prefetch_file(filename)
     reader.SetFileName(filename)
     observer = None
     if progress_callback is not None:

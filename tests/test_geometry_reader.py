@@ -1,6 +1,7 @@
 """Geometry-only reference reads preserve topology and independent ownership."""
 from concurrent.futures import ThreadPoolExecutor
 import gc
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -78,6 +79,71 @@ class GeometryReaderTests(unittest.TestCase):
                 '__wma_geometry_only__')
         reader.ReadAllColorScalarsOff.assert_called_once_with()
         reader.ReadAllFieldsOff.assert_called_once_with()
+
+    def test_prefetch_preserves_full_payload_and_chunks_advice(self):
+        if not hasattr(os, 'POSIX_FADV_WILLNEED'):
+            self.skipTest('POSIX_FADV_WILLNEED is unavailable')
+        chunk = 1024 * 1024
+        advised_size = 64 * chunk + chunk + 17
+        for extension in ('.vtk', '.vtp'):
+            with self.subTest(extension=extension):
+                path = str(self.root / ('prefetch' + extension))
+                data = tractography(9)
+                wma.io.write_polydata(data, path)
+                expected = self.original.read_polydata(path)
+                advice = Mock()
+                with patch.dict(os.environ, {'WMA_IO_PREFETCH': '1'}), \
+                     patch.object(wma.io.os.path, 'getsize', return_value=advised_size), \
+                     patch.object(wma.io.os, 'posix_fadvise', advice, create=True):
+                    actual = wma.io.read_polydata(path)
+                assert_equal(self, expected, actual)
+                self.assertEqual(advice.call_count, 66)
+                self.assertEqual(advice.call_args_list[0].args[1:],
+                                 (0, chunk, os.POSIX_FADV_WILLNEED))
+                self.assertEqual(advice.call_args_list[-1].args[1:],
+                                 (65 * chunk, 17, os.POSIX_FADV_WILLNEED))
+                with self.assertRaises(OSError):
+                    os.fstat(advice.call_args.args[0])
+                # Geometry-only reads skip attributes and must not prefetch them.
+                with patch.object(wma.io, '_prefetch_file') as prefetch:
+                    geometry = wma.io.read_polydata(path, geometry_only=True)
+                prefetch.assert_not_called()
+                assert_geometry(self, expected, geometry)
+
+    def test_prefetch_skips_small_or_disabled_files(self):
+        advice = Mock()
+        with patch.dict(os.environ, {'WMA_IO_PREFETCH': '1'}), \
+             patch.object(wma.io.os, 'posix_fadvise', advice, create=True), \
+             patch.object(wma.io.os.path, 'getsize', return_value=64 * 1024 * 1024 - 1):
+            wma.io._prefetch_file('small.vtk')
+        with patch.dict(os.environ, {'WMA_IO_PREFETCH': '0'}), \
+             patch.object(wma.io.os, 'posix_fadvise', advice, create=True), \
+             patch.object(wma.io.os.path, 'getsize', return_value=64 * 1024 * 1024):
+            wma.io._prefetch_file('disabled.vtk')
+        advice.assert_not_called()
+
+    def test_prefetch_unavailable_or_failing_falls_back_to_vtk_read(self):
+        path = str(self.root / 'fallback.vtk')
+        data = tractography(9)
+        wma.io.write_polydata(data, path)
+        expected = self.original.read_polydata(path)
+        with patch.dict(os.environ, {'WMA_IO_PREFETCH': '1'}), \
+             patch.object(wma.io.os.path, 'getsize', return_value=64 * 1024 * 1024):
+            with patch.object(wma.io.os, 'POSIX_FADV_WILLNEED', 0, create=True), \
+                 patch.object(wma.io.os, 'posix_fadvise', create=True) as advice:
+                advice.side_effect = OSError('advice unsupported')
+                actual = wma.io.read_polydata(path)
+                assert_equal(self, expected, actual)
+                with self.assertRaises(OSError):
+                    os.fstat(advice.call_args.args[0])
+            if hasattr(os, 'posix_fadvise'):
+                with patch.object(wma.io.os, 'posix_fadvise'):
+                    del os.posix_fadvise
+                    actual = wma.io.read_polydata(path)
+                    assert_equal(self, expected, actual)
+            else:
+                actual = wma.io.read_polydata(path)
+                assert_equal(self, expected, actual)
 
     def test_concurrent_readers_and_owned_outputs(self):
         paths, data = [], []
