@@ -6,7 +6,8 @@ This fork adds CUDA GPU acceleration, a vectorized CPU backend, and a five-modul
 
 ## Full-pipeline performance
 
-A whole-brain input of approximately **330,000 streamlines (3.6 GB)** was processed
+On **2026-10-28**, the C028 whole-brain input of approximately
+**330,000 streamlines (3.6 GB)** was processed using source revision `e5abd52`
 through `wm_apply_ORG_atlas_to_subject.sh` with ORG-800FC-100HCP and
 ORG-RegAtlas-100HCP. All three modes use the same updated source, four physical
 CPU cores, `-n 4 -r rig -x 1 -c 0`, standard sampling seed 1000, and float64.
@@ -14,24 +15,27 @@ Hardware: Intel Xeon Gold 6330 and one NVIDIA RTX 4090; Linux, Python 3.8,
 PyTorch 2.4.1/CUDA 12.1 and Slicer 5.2.2 with SlicerDMRI. CUDA 12.1 is the
 benchmark environment, not a WMA requirement.
 
-Total runtime: original joblib **29.2 min**, CPU matrix **5.4 min** (**5.46x** speedup), and GPU **3.0 min** (**9.69x** speedup).
+Total runtime: original joblib **31.15 min**, CPU matrix **6.08 min** (**5.12x** speedup), and GPU **6.11 min** (**5.09x** speedup).
 
 | Step | Joblib (4 workers), s | CPU matrix, s | CPU speedup | GPU, s | GPU speedup |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Registration (rigid + affine) | 378.8 | 68.4 | 5.54x | 39.1 | 9.68x |
-| Atlas labeling and cluster saving | 1104.0 | 99.0 | 11.15x | 30.7 | 35.95x |
-| Outlier removal | 203.7 | 83.9 | 2.43x | 28.5 | 7.14x |
-| Hemisphere assessment | 10.8 | 14.1 | 0.77x | 24.3 | 0.45x |
-| Inverse transform with Slicer | 29.7 | 28.9 | 1.03x | 31.1 | 0.96x |
-| Hemisphere separation | 8.9 | 9.8 | 0.91x | 8.9 | 0.99x |
-| Anatomical tract assembly | 14.9 | 15.2 | 0.98x | 14.9 | 1.00x |
-| **Total** | **1752.8** | **321.0** | **5.46x** | **180.8** | **9.69x** |
+| Registration (rigid + affine) | 391.5 | 94.5 | 4.14x | 163.8 | 2.39x |
+| Atlas labeling and cluster saving | 1159.3 | 96.5 | 12.01x | 73.2 | 15.84x |
+| Outlier removal | 223.7 | 95.7 | 2.34x | 31.9 | 7.01x |
+| Hemisphere assessment | 15.7 | 18.8 | 0.84x | 14.1 | 1.11x |
+| Inverse transform with Slicer | 51.8 | 33.4 | 1.55x | 55.0 | 0.94x |
+| Hemisphere separation | 9.0 | 9.2 | 0.98x | 9.0 | 1.01x |
+| Anatomical tract assembly | 15.7 | 14.9 | 1.06x | 16.5 | 0.95x |
+| **Total** | **1868.9** | **364.7** | **5.12x** | **366.9** | **5.09x** |
 
 Speedup is joblib time divided by the corresponding accelerated time. Original
 joblib means the original per-fiber mathematical backend within the current
 pipeline; common file/I/O improvements are shared by all modes. Four workers
 apply where the original algorithm supports parallelism. Each mode starts in a
-fresh output directory; accelerated atlas-reference caches start empty.
+fresh output directory; accelerated atlas-reference caches start empty. Runs
+were sequential: joblib, CPU matrix, then GPU. CPU affinity was cores 0–3,
+with four WMA workers and one thread per BLAS/OpenMP library; the GPU profile
+used physical device 4 with no competing CUDA process observed on that device.
 
 These are single complete runs on a shared workstation, including reading,
 writing, process startup and Slicer transform hardening. Filesystem/JIT caches
@@ -43,7 +47,9 @@ backends. See the [acceleration overview](doc/acceleration.md) for the changes
 behind the registration, labeling and outlier-removal speedups.
 Interactive display and optional diffusion-measure export are excluded.
 All runs produce 800 initial, outlier-removed and transformed cluster files plus
-74 anatomical tracts. Validation compares every cluster/tract VTP, all hemisphere
+74 anatomical tracts, with identical counts of 245,946 initial fibers, 130,737
+retained fibers and 93,766 fibers across the anatomical outputs.
+Validation compares every cluster/tract VTP, all hemisphere
 splits, the full registered tractogram and all 11 saved ITK transforms against
 this joblib run:
 
@@ -53,9 +59,28 @@ this joblib run:
   point/cell/field data values match exactly. Of 4,874 VTPs, 4,794 are
   byte-identical; the remaining 80 differ only in coordinates. Maximum coordinate
   difference is **1.91e-6 mm**, and maximum saved transform-parameter difference
-  is **3.31e-13**. The full registered VTK also preserves connectivity and
-  original attribute bytes exactly. These floating differences pass
+  is **3.30e-13**. The full registered VTK also preserves connectivity and
+  original attribute bytes exactly, with a maximum coordinate difference of
+  **4.77e-7 mm**. These floating differences pass
   `rtol=1e-6, atol=1e-5` for coordinates and `rtol=1e-10, atol=1e-10` for transforms.
+
+The GPU registration and labeling stages were slower in this complete run than
+in the October 15 run (39.1 s and 30.7 s). Subsequent instrumented runs of the
+same current code measured registration at **55.9 s and 36.2 s** and labeling at
+**32.9 s and 32.8 s**, using the pipeline's LZ4 output compression. Labeling
+computation itself took **3.8 s and 3.7 s**; the rest includes imports, input
+reading, filtering, splitting and writing 800 clusters. A separate repeated-read
+control spent **125.4 s versus 2.5 s** reading the same registered VTK. Registration
+profiling also showed atlas CPU preprocessing varying from **19.4 s to 5.0 s**,
+while the ten GPU optimizer calls totaled about 3–4 s. Delaying the CUDA availability
+check did not consistently improve registration time.
+
+These controls found substantial host-side I/O and preparation variability, with
+no repeatable GPU computation regression. The original complete run did not log
+per-function durations, so its extra time cannot be assigned precisely after
+the fact. The table retains the actual complete-run measurements; isolated
+repeats are not substituted into stage times or totals. In this run CPU matrix
+and GPU total times were effectively tied.
 
 An additional correctness audit sampled **2,048 C028 fibers** using the current
 code and the trained ORG atlas settings. CPU matrix and GPU float64 labels both
@@ -69,7 +94,7 @@ scope and tolerances.
 
 ### Final-stage scheduling check
 
-A separate control reused identical saved C028 intermediates (800 clusters,
+An earlier, separate control reused identical saved C028 intermediates (800 clusters,
 about 131,000 retained fibers) to compare one worker with four workers. Values
 below are the median of two runs per setting, with execution order reversed,
 the same four-core affinity and fresh outputs. Hemisphere labels were removed
@@ -91,7 +116,6 @@ All VTP outputs in the 22 stage runs were byte-identical to the corresponding sa
 joblib results. The one-worker control uses the current geometry/I/O functions
 with serial scheduling; it is not a benchmark of an unmodified upstream checkout.
 These are isolated-stage measurements, not replacement full-pipeline totals.
-The complete-run times above remain unchanged.
 
 # GPU and 3D Slicer quick start
 
