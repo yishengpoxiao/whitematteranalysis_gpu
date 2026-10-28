@@ -66,10 +66,31 @@ def _gather_conn(conn, offsets, keep_indices):
         return numpy.zeros(0, dtype=numpy.int64), numpy.zeros(keep_indices.size + 1, dtype=numpy.int64)
     out_offsets = numpy.zeros(keep_indices.size + 1, dtype=numpy.int64)
     numpy.cumsum(lengths, out=out_offsets[1:])
-    # for each output point, the source position in the connectivity array
-    idx = numpy.arange(total, dtype=numpy.int64) + \
-        numpy.repeat(starts - out_offsets[:-1], lengths)
-    return conn[idx], out_offsets
+    # Build source IDs in line batches instead of allocating two full-size
+    # temporary index arrays for a whole-brain tractogram.
+    selected = numpy.empty(total, dtype=numpy.int64)
+    for first in range(0, keep_indices.size, 4096):
+        last = min(first + 4096, keep_indices.size)
+        begin, end = out_offsets[first], out_offsets[last]
+        idx = numpy.arange(end - begin, dtype=numpy.int64)
+        idx += numpy.repeat(starts[first:last] - out_offsets[first:last] + begin,
+                            lengths[first:last])
+        selected[begin:end] = conn[idx]
+    return selected, out_offsets
+
+
+def _select_vtk_array(values, indices, dtype):
+    """Gather into VTK-owned storage with bounded temporary NumPy arrays."""
+    from vtk.util import numpy_support
+
+    output = vtk.vtkDataArray.CreateDataArray(numpy_support.get_vtk_array_type(dtype))
+    output.SetNumberOfComponents(values.shape[1] if values.ndim == 2 else 1)
+    output.SetNumberOfTuples(indices.size)
+    target = numpy_support.vtk_to_numpy(output).reshape((indices.size,) + values.shape[1:])
+    for first in range(0, indices.size, 262144):
+        last = min(first + 262144, indices.size)
+        target[first:last] = values[indices[first:last]]
+    return output
 
 
 def _mean_nearest_neighbor_distance(distances):
@@ -274,26 +295,41 @@ def preprocess(inpd, min_length_mm,
                 return inpd
 
     
+    line_indices, fiber_lengths, step_size = _preprocess_indices(
+        inpd, min_length_mm, remove_u=remove_u,
+        remove_u_endpoint_dist=remove_u_endpoint_dist,
+        remove_brainstem=remove_brainstem, max_length_mm=max_length_mm,
+        verbose=verbose)
+    num_lines = inpd.GetNumberOfLines()
+    fiber_mask = numpy.zeros(num_lines)
+    fiber_mask[line_indices] = 1
+    outpd = mask(inpd, fiber_mask, preserve_point_data=preserve_point_data, preserve_cell_data=preserve_cell_data, verbose=verbose)
+
+    if return_indices:
+        if return_lengths:
+            return outpd, numpy.array(line_indices), fiber_lengths, step_size
+        else:
+            return outpd, numpy.array(line_indices)
+    else:
+        if return_lengths:
+            return outpd, fiber_lengths, step_size
+        else:
+            return outpd
+
+
+def _preprocess_indices(inpd, min_length_mm, remove_u=False,
+                        remove_u_endpoint_dist=40, remove_brainstem=False,
+                        max_length_mm=None, verbose=False):
+    """Return the indices and lengths selected by :func:`preprocess`."""
+    if inpd.GetNumberOfLines() == 0 or inpd.GetNumberOfPoints() == 0:
+        return numpy.empty(0, dtype=numpy.int64), 0, 0
+
     fiber_lengths, step_size = compute_lengths(inpd)
-
-    #print "LINES:", inpd.GetNumberOfLines(), "STEP", step_size
-
     min_length_pts = round(min_length_mm / float(step_size))
     if verbose:
         print(f"<{os.path.basename(__file__)}> Minimum length", min_length_mm, \
             "mm. Tractography step size * minimum number of points =", step_size, "*", min_length_pts, ")")
 
-    # set up processing and output objects
-    ptids = vtk.vtkIdList()
-    inpoints = inpd.GetPoints()
-
-    # loop over lines
-    inpd.GetLines().InitTraversal()
-    num_lines = inpd.GetNumberOfLines()
-    # keep track of the lines we will keep
-    line_indices = list()
-
-    # fast path: vectorized line selection, bit-identical to the loop below
     fast = _lines_offsets_connectivity(inpd)
     if fast is not None:
         offsets, conn, points = fast
@@ -311,60 +347,32 @@ def preprocess(inpd, min_length_mm,
             if remove_brainstem:
                 mean_sup_inf = (point0[:, 2] + point1[:, 2]) / 2
                 keep &= ~(mean_sup_inf < -40)
-        line_indices = numpy.nonzero(keep)[0]
-    else:
-        for lidx in range(0, num_lines):
-            inpd.GetLines().GetNextCell(ptids)
+        return numpy.nonzero(keep)[0], fiber_lengths, step_size
 
-            # first figure out whether to keep this line
-            keep_curr_fiber = False
-
-            # test for line being long enough
-            if ptids.GetNumberOfIds() > min_length_pts:
-                keep_curr_fiber = True
-
-                if max_length_mm is not None:
-                    if ptids.GetNumberOfIds() * step_size > max_length_mm:
-                        keep_curr_fiber = False
-
-                if remove_u | remove_brainstem:
-                    # find first and last points on the fiber
-                    ptid = ptids.GetId(0)
-                    point0 = inpoints.GetPoint(ptid)
-                    ptid = ptids.GetId(ptids.GetNumberOfIds() - 1)
-                    point1 = inpoints.GetPoint(ptid)
-
-                if remove_u:
-                    # compute distance between endpoints
-                    endpoint_dist = numpy.sqrt(numpy.sum(numpy.power(
-                                numpy.subtract(point0, point1), 2)))
-                    if endpoint_dist < remove_u_endpoint_dist:
-                        keep_curr_fiber = False
-
-                if remove_brainstem:
-                    # compute average SI (third coordinate) < -40
-                    mean_sup_inf = (point0[2] + point1[2]) / 2
-                    if mean_sup_inf < -40:
-                        keep_curr_fiber = False
-
-            # if we are keeping the line record its index
-            if keep_curr_fiber:
-                line_indices.append(lidx)
-
-    fiber_mask = numpy.zeros(num_lines)
-    fiber_mask[line_indices] = 1
-    outpd = mask(inpd, fiber_mask, preserve_point_data=preserve_point_data, preserve_cell_data=preserve_cell_data, verbose=verbose)
-
-    if return_indices:
-        if return_lengths:
-            return outpd, numpy.array(line_indices), fiber_lengths, step_size
-        else:
-            return outpd, numpy.array(line_indices)
-    else:
-        if return_lengths:
-            return outpd, fiber_lengths, step_size
-        else:
-            return outpd
+    ptids = vtk.vtkIdList()
+    inpoints = inpd.GetPoints()
+    inpd.GetLines().InitTraversal()
+    line_indices = []
+    for lidx in range(inpd.GetNumberOfLines()):
+        inpd.GetLines().GetNextCell(ptids)
+        keep_curr_fiber = ptids.GetNumberOfIds() > min_length_pts
+        if keep_curr_fiber and max_length_mm is not None:
+            keep_curr_fiber = not (ptids.GetNumberOfIds() * step_size > max_length_mm)
+        if keep_curr_fiber and (remove_u or remove_brainstem):
+            point0 = inpoints.GetPoint(ptids.GetId(0))
+            point1 = inpoints.GetPoint(ptids.GetId(ptids.GetNumberOfIds() - 1))
+            if remove_u:
+                endpoint_dist = numpy.sqrt(numpy.sum(numpy.power(
+                    numpy.subtract(point0, point1), 2)))
+                if endpoint_dist < remove_u_endpoint_dist:
+                    keep_curr_fiber = False
+            if remove_brainstem:
+                mean_sup_inf = (point0[2] + point1[2]) / 2
+                if mean_sup_inf < -40:
+                    keep_curr_fiber = False
+        if keep_curr_fiber:
+            line_indices.append(lidx)
+    return numpy.asarray(line_indices, dtype=numpy.int64), fiber_lengths, step_size
 
 def downsample(inpd, output_number_of_lines, return_indices=False, preserve_point_data=False, preserve_cell_data=True, initial_indices=None, verbose=True, random_seed=1234):
     """ Random (down)sampling of fibers without replacement. """
@@ -554,18 +562,19 @@ def mask(inpd, fiber_mask, color=None, preserve_point_data=False, preserve_cell_
         # original point id (used to gather coordinates and point data)
         src_conn, out_offsets = _gather_conn(conn, offsets, keep_indices)
         total = int(out_offsets[-1]) if out_offsets.size else 0
-        out_conn = numpy.arange(total, dtype=numpy.int64)
-
         # points: only those referenced by kept lines, in output order
-        out_points_arr = in_points[src_conn].astype(numpy.float32, copy=False)
-        outpoints.SetData(numpy_support.numpy_to_vtk(out_points_arr, deep=True))
+        outpoints.SetData(_select_vtk_array(in_points, src_conn, numpy.float32))
 
         # lines
         out_lines = vtk.vtkCellArray()
         offsets_vtk = numpy_support.numpy_to_vtk(
             out_offsets, deep=True, array_type=vtk.vtkIdTypeArray().GetDataType())
-        conn_vtk = numpy_support.numpy_to_vtk(
-            out_conn, deep=True, array_type=vtk.vtkIdTypeArray().GetDataType())
+        conn_vtk = vtk.vtkIdTypeArray()
+        conn_vtk.SetNumberOfValues(total)
+        out_conn = numpy_support.vtk_to_numpy(conn_vtk)
+        for first in range(0, total, 262144):
+            last = min(first + 262144, total)
+            out_conn[first:last] = numpy.arange(first, last, dtype=numpy.int64)
         out_lines.SetData(offsets_vtk, conn_vtk)
         outlines = out_lines
 
@@ -574,18 +583,16 @@ def mask(inpd, fiber_mask, color=None, preserve_point_data=False, preserve_cell_
             for idx in range(incelldata.GetNumberOfArrays()):
                 array = incelldata.GetArray(idx)
                 full = numpy_support.vtk_to_numpy(array)
-                values = full[keep_indices]
                 dtype = array.GetDataType()
                 if dtype == 10:
-                    values = values.astype(numpy.float32, copy=False)
+                    output_dtype = numpy.float32
                 elif dtype == 6:
-                    values = values.astype(numpy.int32, copy=False)
+                    output_dtype = numpy.int32
                 elif dtype == 3:
-                    values = values.astype(numpy.uint8, copy=False)
+                    output_dtype = numpy.uint8
                 else:
-                    values = values.astype(numpy.float32, copy=False)
-                out_array = numpy_support.numpy_to_vtk(
-                    numpy.ascontiguousarray(values), deep=True)
+                    output_dtype = numpy.float32
+                out_array = _select_vtk_array(full, keep_indices, output_dtype)
                 out_array.SetName(array.GetName())
                 outcelldata.AddArray(out_array)
 
@@ -594,22 +601,18 @@ def mask(inpd, fiber_mask, color=None, preserve_point_data=False, preserve_cell_
             for idx in range(inpointdata.GetNumberOfArrays()):
                 array = inpointdata.GetArray(idx)
                 full = numpy_support.vtk_to_numpy(array)
-                values = full[src_conn].astype(numpy.float32, copy=False)
-                out_array = numpy_support.numpy_to_vtk(
-                    numpy.ascontiguousarray(values), deep=True)
+                out_array = _select_vtk_array(full, src_conn, numpy.float32)
                 out_array.SetName(array.GetName())
                 outpointdata.AddArray(out_array)
 
         # color scalars: same array types as the loop, set as active scalars
         if color is not None:
-            values = numpy.asarray(color)[keep_indices]
+            values = numpy.asarray(color)
             if outcolors.GetNumberOfComponents() == 3:
-                color_arr = numpy_support.numpy_to_vtk(
-                    numpy.ascontiguousarray(values.astype(numpy.uint8)), deep=True)
+                color_arr = _select_vtk_array(values, keep_indices, numpy.uint8)
                 color_arr.SetNumberOfComponents(3)
             else:
-                color_arr = numpy_support.numpy_to_vtk(
-                    numpy.ascontiguousarray(values.astype(numpy.float32)), deep=True)
+                color_arr = _select_vtk_array(values, keep_indices, numpy.float32)
             outpd.GetCellData().SetScalars(color_arr)
 
         outpd.SetPoints(outpoints)

@@ -169,9 +169,10 @@ class RegistrationTests(unittest.TestCase):
                 moving = reference_sample(registration.subject_polydata, registration.subject_brain_size, seed)
                 expected_state = np.random.get_state()
                 np.random.seed(101)
-                with patch.object(wma.filter, 'preprocess', wraps=wma.filter.preprocess) as preprocess:
+                with patch.object(wma.filter, '_preprocess_indices',
+                                  wraps=wma.filter._preprocess_indices) as select:
                     registration.iterate()
-                self.assertEqual(preprocess.call_count, expected_calls, change)
+                self.assertEqual(select.call_count, expected_calls, change)
                 np.testing.assert_array_equal(loop.call_args.args[0], fixed)
                 np.testing.assert_array_equal(loop.call_args.args[1], moving)
                 state = np.random.get_state()

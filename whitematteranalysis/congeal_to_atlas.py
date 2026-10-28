@@ -103,17 +103,31 @@ class SubjectToAtlasRegistration:
         self.atlas_polydata = polydata
         self.atlas_id = atlas_id
 
-    def _preprocessed_polydata(self, polydata, role):
-        """Reuse length filtering until the input geometry or limits change."""
+    def _preprocessed_indices(self, polydata, role):
+        """Reuse length-filter indices until input geometry or limits change."""
         key = (polydata, polydata.GetMTime(), self.fiber_length, self.fiber_length_max)
         cached = self._preprocessed.get(role)
         if cached is None or cached[0] != key:
-            filtered = wma.filter.preprocess(
+            indices, _, _ = wma.filter._preprocess_indices(
                 polydata, self.fiber_length, max_length_mm=self.fiber_length_max,
-                return_indices=False, preserve_point_data=False,
-                preserve_cell_data=False, verbose=False)
-            cached = self._preprocessed[role] = (key, filtered)
+                verbose=False)
+            cached = self._preprocessed[role] = (key, indices)
         return cached[1]
+
+    def _sample_preprocessed_polydata(self, polydata, role, sample_count, seed):
+        eligible = self._preprocessed_indices(polydata, role)
+        if polydata.GetNumberOfLines() == 0 or polydata.GetNumberOfPoints() == 0:
+            return polydata
+        if eligible.size < sample_count:
+            selected = eligible
+        else:
+            numpy.random.seed(seed)
+            selected = eligible[numpy.random.permutation(eligible.size)[:sample_count]]
+        fiber_mask = numpy.zeros(polydata.GetNumberOfLines())
+        fiber_mask[selected] = 1
+        return wma.filter.mask(
+            polydata, fiber_mask, preserve_point_data=False,
+            preserve_cell_data=False, verbose=False)
 
     def iterate(self):
         self.total_iterations += 1
@@ -125,16 +139,18 @@ class SubjectToAtlasRegistration:
             os.makedirs(outdir)
 
         print("filtering and downsampling atlas")
-        mean_brain = self._preprocessed_polydata(self.atlas_polydata, 'atlas')
-        mean_brain, tmp = wma.filter.downsample(mean_brain, self.mean_brain_size, return_indices=True, verbose=False, random_seed=self.random_seed+self.total_iterations) 
+        mean_brain = self._sample_preprocessed_polydata(
+            self.atlas_polydata, 'atlas', self.mean_brain_size,
+            self.random_seed + self.total_iterations)
 
         mean_fibers = wma.fibers.FiberArray()
         mean_fibers.convert_from_polydata(mean_brain, self.points_per_fiber)
         fixed = numpy.array([mean_fibers.fiber_array_r,mean_fibers.fiber_array_a,mean_fibers.fiber_array_s])
         
         print("filtering and downsampling subject")
-        subject_brain = self._preprocessed_polydata(self.subject_polydata, 'subject')
-        subject_brain, tmp = wma.filter.downsample(subject_brain, self.subject_brain_size, return_indices=True, verbose=False, random_seed=self.random_seed+self.total_iterations)
+        subject_brain = self._sample_preprocessed_polydata(
+            self.subject_polydata, 'subject', self.subject_brain_size,
+            self.random_seed + self.total_iterations)
 
         fibers = wma.fibers.FiberArray()
         fibers.convert_from_polydata(subject_brain, self.points_per_fiber)

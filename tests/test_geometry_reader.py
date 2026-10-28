@@ -1,8 +1,10 @@
 """Geometry-only reference reads preserve topology and independent ownership."""
 from concurrent.futures import ThreadPoolExecutor
+import gc
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import Mock, patch
 
 import numpy as np
 from vtk.util.numpy_support import vtk_to_numpy
@@ -60,8 +62,22 @@ class GeometryReaderTests(unittest.TestCase):
         changed.GetPointData().GetArray(0).SetName('new schema')
         wma.io.write_polydata(changed, path)
         assert_geometry(self, changed, wma.io.read_polydata(path, geometry_only=True))
+        gc.collect()
         assert_geometry(self, first, retained)
         assert_equal(self, changed, wma.io.read_polydata(path))
+
+    def test_legacy_geometry_read_skips_typed_arrays(self):
+        reader = Mock()
+        reader.GetOutput.return_value = tractography(3)
+        with patch.object(wma.io.vtk, 'vtkPolyDataReader', return_value=reader):
+            output = wma.io.read_polydata('reference.vtk', geometry_only=True)
+        self.assertEqual(output.GetNumberOfLines(), 3)
+        for array_type in ('Scalars', 'Vectors', 'Tensors', 'Normals', 'TCoords'):
+            getattr(reader, 'ReadAll' + array_type + 'Off').assert_called_once_with()
+            getattr(reader, 'Set' + array_type + 'Name').assert_called_once_with(
+                '__wma_geometry_only__')
+        reader.ReadAllColorScalarsOff.assert_called_once_with()
+        reader.ReadAllFieldsOff.assert_called_once_with()
 
     def test_concurrent_readers_and_owned_outputs(self):
         paths, data = [], []

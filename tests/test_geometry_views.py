@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 
 import numpy as np
+import vtk
 from vtk.util.numpy_support import vtk_to_numpy, numpy_to_vtk
 import whitematteranalysis as wma
 from test_atlas_blocks import polydata
@@ -60,6 +61,44 @@ class GeometryViewTests(unittest.TestCase):
                     np.testing.assert_array_equal(getattr(a, name), getattr(b, name))
                     self.assertTrue(getattr(b, name).flags.c_contiguous)
             np.testing.assert_array_equal(vtk_to_numpy(data.GetPoints().GetData()), values)
+
+    def test_large_mask_batches_preserve_order_types_and_ownership(self):
+        lengths = np.full(4200, 67, dtype=np.int64)
+        lengths[::100] = 2
+        offsets = np.r_[0, lengths.cumsum()]
+        count = int(offsets[-1])
+        values = np.arange(count * 3, dtype=np.float64).reshape(count, 3) / 7.
+        points = vtk.vtkPoints()
+        points.SetData(numpy_to_vtk(values, deep=True))
+        lines = vtk.vtkCellArray()
+        lines.SetData(numpy_to_vtk(offsets, deep=True),
+                      numpy_to_vtk(np.arange(count, dtype=np.int64)[::-1].copy(), deep=True))
+        data = vtk.vtkPolyData()
+        data.SetPoints(points)
+        data.SetLines(lines)
+        attribute = numpy_to_vtk(values[:, 0].copy(), deep=True)
+        attribute.SetName('scalar')
+        data.GetPointData().SetScalars(attribute)
+        colors = np.arange(4200 * 3).reshape(4200, 3) % 256
+        mask = np.ones(4200)
+        expected = self.old_filter.mask(data, mask, colors, preserve_point_data=True, verbose=False)
+        actual = wma.filter.mask(data, mask, colors, preserve_point_data=True, verbose=False)
+        with tempfile.TemporaryDirectory() as directory:
+            a, b = Path(directory) / 'expected.vtp', Path(directory) / 'actual.vtp'
+            wma.io.write_polydata(expected, str(a))
+            wma.io.write_polydata(actual, str(b))
+            self.assertEqual(a.read_bytes(), b.read_bytes())
+        actual.GetPointData().GetArray('scalar').SetTuple1(0, -100.)
+        np.testing.assert_array_equal(vtk_to_numpy(data.GetPointData().GetArray('scalar')), values[:, 0])
+
+        # Empty connectivity ranges need no VTK cell construction.
+        offsets = np.array([0, 0, 3, 3, 5], dtype=np.int64)
+        connectivity = np.array([7, 4, 7, 2, 9], dtype=np.int64)
+        selected = np.array([2, 3, 0, 1], dtype=np.int64)
+        expected = self.old_filter._gather_conn(connectivity, offsets, selected)
+        actual = wma.filter._gather_conn(connectivity, offsets, selected)
+        for a, b in zip(expected, actual):
+            np.testing.assert_array_equal(a, b)
 
 
 if __name__ == '__main__':

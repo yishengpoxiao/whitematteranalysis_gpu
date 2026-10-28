@@ -39,25 +39,24 @@ _geometry_readers = local()
 def read_polydata(filename, progress_callback=None, geometry_only=False):
     """Read tractography; optionally discard attributes for reference geometry.
 
-    XML geometry reads reuse one reader per thread and skip known point/cell
-    arrays. Returned geometry is independent of subsequent reads. Legacy VTK
+    XML geometry reads reuse a reader per thread and skip point/cell arrays.
+    Returned geometry remains independent of later reads. Legacy VTK
     attributes are discarded after reading; default reads retain attributes.
     """
 
     if VERBOSE:
         print("Reading in data from", filename, "...")
 
-    basename, extension = os.path.splitext(filename)
+    extension = os.path.splitext(filename)[1]
 
     shared_reader = geometry_only and extension == '.vtp'
-    first_read = False
     if shared_reader:
         reader = getattr(_geometry_readers, 'xml', None)
+        first_read = reader is None
         if reader is None:
             reader = vtk.vtkXMLPolyDataReader()
             _geometry_readers.xml = reader
-            first_read = True
-    elif (extension == '.vtk'):
+    elif extension == '.vtk':
         reader = vtk.vtkPolyDataReader()
     elif (extension == '.vtp'):
         reader = vtk.vtkXMLPolyDataReader()
@@ -75,7 +74,15 @@ def read_polydata(filename, progress_callback=None, geometry_only=False):
                 reader.UpdateInformation()
             reader.GetPointDataArraySelection().DisableAllArrays()
             reader.GetCellDataArraySelection().DisableAllArrays()
-            reader.Modified()  # Reread even when an existing filename was overwritten.
+            reader.Modified()
+        elif geometry_only:
+            # The legacy reader otherwise materializes the selected typed
+            # arrays before geometry_only discards them below.
+            for array_type in ('Scalars', 'Vectors', 'Tensors', 'Normals', 'TCoords'):
+                getattr(reader, 'ReadAll' + array_type + 'Off')()
+                getattr(reader, 'Set' + array_type + 'Name')('__wma_geometry_only__')
+            reader.ReadAllColorScalarsOff()
+            reader.ReadAllFieldsOff()
         reader.Update()
         outpd = reader.GetOutput()
         if geometry_only:
@@ -84,7 +91,7 @@ def read_polydata(filename, progress_callback=None, geometry_only=False):
             outpd.GetFieldData().Initialize()
             if shared_reader:
                 result = vtk.vtkPolyData()
-                result.DeepCopy(outpd)
+                result.ShallowCopy(outpd)
                 outpd.ReleaseData()
                 outpd = result
     finally:

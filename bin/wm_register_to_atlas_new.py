@@ -82,7 +82,7 @@ def main():
     subject_pd = wma.io.read_polydata(fname)
     fname = args.inputAtlas
     atlas_id = os.path.splitext(os.path.basename(fname))[0]
-    atlas_pd = wma.io.read_polydata(fname)
+    atlas_pd = wma.io.read_polydata(fname, geometry_only=True)
     
     outdir = args.outputDirectory
     if not os.path.exists(outdir):
