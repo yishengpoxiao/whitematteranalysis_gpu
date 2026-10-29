@@ -1,11 +1,14 @@
 """Cluster ordering, metadata and file bytes survive vectorization/process writing."""
 from pathlib import Path
+import multiprocessing
 import subprocess
 import linecache
 import sys
 import tempfile
 import types
 import unittest
+from threading import Barrier
+from unittest.mock import patch
 
 import numpy as np
 import vtk
@@ -88,6 +91,37 @@ class OutputTests(unittest.TestCase):
                 wma.io.write_polydatas_parallel(polydatas, parallel, jobs=3)
                 for a, b in zip(serial, parallel):
                     self.assertEqual(Path(a).read_bytes(), Path(b).read_bytes())
+
+    def test_parallel_writes_without_fork_preserve_bytes_and_overlap(self):
+        # Exercise the Windows branch on any host, with real concurrent VTK
+        # writers. The barrier would fail if the fallback became serial.
+        for extension in ('.vtk', '.vtp'):
+            with self.subTest(extension=extension), tempfile.TemporaryDirectory() as directory:
+                polydatas = [fixture(), fixture()]
+                serial = [str(Path(directory)/('serial%d%s' % (i, extension))) for i in range(2)]
+                parallel = [str(Path(directory)/('parallel%d%s' % (i, extension))) for i in range(2)]
+                write = wma.io.write_polydata
+                for pd, filename in zip(polydatas, serial):
+                    write(pd, filename)
+                barrier = Barrier(2)
+
+                def concurrent_write(pd, filename):
+                    barrier.wait(timeout=10)
+                    write(pd, filename)
+
+                with patch.object(multiprocessing, 'get_all_start_methods', return_value=['spawn']), \
+                        patch.object(multiprocessing, 'get_context') as context, \
+                        patch.object(wma.io, 'write_polydata', side_effect=concurrent_write):
+                    wma.io.write_polydatas_parallel(polydatas, parallel, jobs=2)
+                context.assert_not_called()
+                for a, b in zip(serial, parallel):
+                    self.assertEqual(Path(a).read_bytes(), Path(b).read_bytes())
+
+    def test_thread_writer_propagates_failure(self):
+        with patch.object(multiprocessing, 'get_all_start_methods', return_value=['spawn']), \
+                patch.object(wma.io, 'write_polydata', side_effect=IOError('write failed')):
+            with self.assertRaisesRegex(IOError, 'write failed'):
+                wma.io.write_polydatas_parallel([fixture(), fixture()], ['a.vtp', 'b.vtp'], jobs=2)
 
     def test_colors_match_colorsys(self):
         rng = np.random.RandomState(2026)

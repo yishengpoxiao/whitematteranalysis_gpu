@@ -83,6 +83,7 @@ class LoadingTests(unittest.TestCase):
     def test_release_keeps_live_tensors_and_clears_inactive_cache(self):
         import torch
         device = 0
+        torch.cuda.init()
         baseline = release_unused_memory(device)
         live = torch.ones(1024, device='cuda:0')
         temporary = torch.ones(8 << 20, device='cuda:0')

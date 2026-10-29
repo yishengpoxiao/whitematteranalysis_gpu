@@ -9,6 +9,7 @@ from unittest.mock import patch
 import numpy as np
 import whitematteranalysis as wma
 from whitematteranalysis.gpu import atlas_cache
+from whitematteranalysis.gpu.config import float32_enabled
 from test_cli_file_stages import tractography
 
 
@@ -31,7 +32,12 @@ class AtlasCacheTests(unittest.TestCase):
         distances = wma.cluster._pairwise_distance_matrix(self.data, 0., number_of_jobs=1,
             distance_method=method, bilateral=bilateral, sigmasq=sigmasq, use_gpu=backend == 'gpu')
         expected = (np.exp(-distances / sigmasq).sum(axis=1) - 1.) / len(arrays)
-        np.testing.assert_array_equal(probabilities, expected)
+        if backend == 'gpu':
+            tolerance = 2e-6 if float32_enabled() else 2e-14
+            np.testing.assert_allclose(probabilities, expected, rtol=tolerance,
+                                       atol=tolerance * 0.1)
+        else:
+            np.testing.assert_array_equal(probabilities, expected)
         with patch.object(wma.io, 'read_polydata', side_effect=AssertionError('cache miss')):
             cached_arrays, cached_probabilities = load()
         np.testing.assert_array_equal(cached_arrays, arrays)

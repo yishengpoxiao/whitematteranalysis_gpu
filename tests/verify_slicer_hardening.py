@@ -17,7 +17,9 @@ import vtk
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / 'tests'))
+sys.path.insert(0, str(ROOT / 'bin'))
 import whitematteranalysis as wma
+import wm_separate_clusters_by_hemisphere as separation
 from test_output_pipeline import fixture
 
 
@@ -67,7 +69,9 @@ def main():
                     output = root / ('%s_%s_%s' % (label, nonrigid, inverse))
                     output.mkdir()
                     args = argparse.Namespace(polydata=str(inputs), transform=str(transform_path),
-                                              inverse=inverse, outdir=str(output))
+                                              inverse=inverse, outdir=str(output),
+                                              partition_index=0, partition_count=1,
+                                              split_output_directory=None)
                     with patch.object(module, '_parse_args', return_value=args), \
                             patch.object(slicer.util, 'loadTransform', wraps=slicer.util.loadTransform) as load:
                         start = time.perf_counter()
@@ -84,6 +88,59 @@ def main():
                     outputs.append(output)
                 for path in inputs.glob('*.vtp'):
                     assert (outputs[0] / path.name).read_bytes() == (outputs[1] / path.name).read_bytes(), path.name
+
+        split_inputs = root / 'split_input'
+        split_inputs.mkdir()
+        labeled = fixture()
+        point_labels = vtk.vtkDoubleArray()
+        point_labels.SetName('HemisphereLocation')
+        point_labels.SetNumberOfTuples(labeled.GetNumberOfPoints())
+        point_labels.Fill(0.)
+        line_labels = (1., 2., 3., 1., 2.)
+        labeled.GetLines().InitTraversal()
+        ids = vtk.vtkIdList()
+        for index, label in enumerate(line_labels):
+            labeled.GetLines().GetNextCell(ids)
+            point_labels.SetValue(ids.GetId(ids.GetNumberOfIds() - 1), label)
+        labeled.GetPointData().AddArray(point_labels)
+        wma.io.write_polydata(labeled, str(split_inputs / 'cluster_00001.vtp'))
+        empty = vtk.vtkPolyData()
+        empty.SetPoints(vtk.vtkPoints())
+        empty.SetLines(vtk.vtkCellArray())
+        empty_labels = vtk.vtkDoubleArray()
+        empty_labels.SetName('HemisphereLocation')
+        empty.GetPointData().AddArray(empty_labels)
+        wma.io.write_polydata(empty, str(split_inputs / 'cluster_00002.vtp'))
+
+        split_transform = root / 'split_transform.tfm'
+        transform_node = slicer.mrmlScene.AddNewNodeByClass('vtkMRMLTransformNode')
+        transform = vtk.vtkTransform()
+        transform.Translate(2., -3., 4.)
+        transform_node.SetAndObserveTransformToParent(transform)
+        transform_node.GetTransformFromParent().Update()
+        assert slicer.util.saveNode(transform_node, str(split_transform))
+        slicer.mrmlScene.RemoveNode(transform_node)
+
+        split_output = root / 'split_transformed'
+        split_actual = root / 'split_actual'
+        split_expected = root / 'split_expected'
+        split_args = argparse.Namespace(polydata=str(split_inputs), transform=str(split_transform),
+            inverse='0', outdir=str(split_output), partition_index=0, partition_count=1,
+            split_output_directory=str(split_actual))
+        for folder in ('tracts_left_hemisphere', 'tracts_right_hemisphere', 'tracts_commissural'):
+            (split_actual / folder).mkdir(parents=True)
+            (split_expected / folder).mkdir(parents=True)
+        with patch.object(current, '_parse_args', return_value=split_args):
+            current.main()
+        for transformed in split_output.glob('*.vtp'):
+            pd = wma.io.read_polydata(str(transformed))
+            found, labels = separation.read_mask_location_from_vtk(pd)
+            assert found, transformed
+            separation.split_polydata(pd, labels, transformed.name, str(split_expected))
+            for folder in ('tracts_left_hemisphere', 'tracts_right_hemisphere', 'tracts_commissural'):
+                actual = split_actual / folder / transformed.name
+                expected = split_expected / folder / transformed.name
+                assert actual.read_bytes() == expected.read_bytes(), (folder, transformed.name)
     print('HARDENING_RESULTS', json.dumps(results), flush=True)
     print('SLICER_HARDENING_VERIFIED', flush=True)
 

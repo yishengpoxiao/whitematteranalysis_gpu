@@ -84,17 +84,22 @@ def load_reference(filename, sigmasq, method='Mean', bilateral=True,
     probabilities = np.empty(0, dtype=probability_dtype)
     if len(coordinates):
         if backend == 'gpu':
-            from .distance import distance_matrix_from_arrays as matrix
-            kwargs = {}
+            from .distance import similarity_row_sums_from_arrays
+            tile_rows = (max(1, tile_bytes // (len(coordinates) * 15 * 8 * 12))
+                         if tile_bytes is not None else None)
+            similarity_sums = similarity_row_sums_from_arrays(
+                coordinates, coordinates, 0., distance_method=method,
+                bilateral=bilateral, sigmasq=sigmasq, tile_rows=tile_rows)
+            probabilities = (similarity_sums - 1.) / len(coordinates)
         else:
             from .cpu_backend import _distance_matrix as matrix
             kwargs = dict(number_of_jobs=1)
-        if tile_bytes is not None:
-            kwargs['tile_rows'] = max(1, tile_bytes // (len(coordinates) * 15 * 8 * 12))
-        distances = matrix(coordinates, coordinates, 0., distance_method=method,
-                           bilateral=bilateral, sigmasq=sigmasq, **kwargs)
-        similarities = similarity.distance_to_similarity(distances, sigmasq)
-        probabilities = (np.sum(similarities, axis=1) - 1.) / len(coordinates)
+            if tile_bytes is not None:
+                kwargs['tile_rows'] = max(1, tile_bytes // (len(coordinates) * 15 * 8 * 12))
+            distances = matrix(coordinates, coordinates, 0., distance_method=method,
+                               bilateral=bilateral, sigmasq=sigmasq, **kwargs)
+            similarities = similarity.distance_to_similarity(distances, sigmasq)
+            probabilities = (np.sum(similarities, axis=1) - 1.) / len(coordinates)
     if path is not None:
         temporary = None
         try:

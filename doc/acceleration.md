@@ -41,8 +41,11 @@ Source: [CPU backend](../whitematteranalysis/gpu/cpu_backend.py),
   labels, embedding coordinates and statistics return to the CPU.
 - **Shared geometry/I/O:** bulk VTK connectivity/coordinate access replaces
   per-point Python calls. Cluster splitting preserves fiber order and data
-  arrays while avoiding repeated scans of the full tractogram. Parallel writers
-  and lossless LZ4 intermediate files reduce output overhead.
+  arrays while avoiding repeated scans of the full tractogram. Cluster counts
+  and color means reuse stable label groups instead of rescanning all labels for
+  each cluster. On Linux, parallel VTK writers use fork workers with inherited
+  read-only polydata; Windows and macOS use one writer per thread. Lossless LZ4
+  intermediate files reduce output overhead.
 - Atlas construction reuses the accelerated distance/similarity operations.
   Sampling and clustering settings are kept consistent across backends.
 
@@ -59,6 +62,11 @@ Source: [CPU labeling](../whitematteranalysis/gpu/cpu_backend.py),
 - CPU/GPU blocks replace per-fiber distance loops while keeping the same
   probability calculation and rejection rule. Empty subject clusters skip
   unnecessary reference comparisons.
+- GPU outlier scoring reduces similarity sums by query row, avoiding a full
+  subject-by-atlas distance matrix. In float64 mode, scores near the rejection
+  cutoff are recomputed with the CPU metric and NumPy reductions to preserve
+  cutoff-sensitive decisions. Explicit float32 mode remains approximate and
+  skips this refinement.
 - Atlas coordinates and leave-one-out reference probabilities can be cached
   across subjects. Cache identity includes atlas file metadata, numerical
   settings, backend/precision, library versions and implementation identity.
@@ -88,6 +96,13 @@ Their improvements come from vectorized geometry/label access, independent
 file processing, lossless intermediate compression and batching many files into
 Slicer workers. They do not contain the large distance matrices that benefit
 from CUDA.
+
+The ORG shell pipeline now splits hemispheres inside each inverse-transform
+worker while the hardened polydata is still in memory. It retains the complete
+transformed files and avoids reading them again for separation. The following
+separation command verifies the three output catalogues and repairs incomplete
+sets. Its timing is therefore verification time; the split work is included in
+the inverse-transform stage.
 
 Small differences between the three full-run columns do not establish a backend
 regression: they also include process startup, filesystem cache state and shared
@@ -127,7 +142,3 @@ and eager kernels, B-splines, file metadata and Slicer workflows. Float64 retain
 unit coordinate differences even around `1e8`; float32 can erase those differences
 and remains opt-in. Explicit `-gpu on` now requires usable CUDA rather than
 silently falling back to CPU.
-
-The audit's final run of `python -m pytest tests slicer/WMAGPU/Testing -q -rs`
-passed 117 tests on one RTX 4090 with PyTorch 2.4.1, Triton 3.0.0 and float64
-defaults. Four device-selection tests requiring two visible GPUs were skipped.

@@ -246,12 +246,15 @@ def main():
     pd_c_list = wma.cluster.mask_all_clusters(output_polydata_s, cluster_numbers_s, number_of_clusters, preserve_point_data=True, preserve_cell_data=True,verbose=True)
     
     print(f'<{os.path.basename(__file__)}> Saving output cluster files in directory:', outdir)
-    cluster_sizes = list()
+    # Reuse stable label groups for counts/colors instead of scanning every
+    # subject label once per cluster. Color means keep the original fiber order.
+    valid = numpy.flatnonzero(cluster_numbers_s >= 0)
+    order = valid[numpy.argsort(cluster_numbers_s[valid], kind='stable')]
+    boundaries = numpy.searchsorted(cluster_numbers_s[order], numpy.arange(number_of_clusters + 1))
+    cluster_sizes = numpy.diff(boundaries)
     cluster_fnames = list()
     for c in range(number_of_clusters):
-        mask = cluster_numbers_s == c
-        cluster_size = numpy.sum(mask)
-        cluster_sizes.append(cluster_size)
+        cluster_size = cluster_sizes[c]
         #pd_c = wma.filter.mask(output_polydata_s, mask, preserve_point_data=True, preserve_cell_data=True,verbose=False)
         pd_c = pd_c_list[c]
         # The clusters are stored starting with 1, not 0, for user friendliness.
@@ -261,7 +264,7 @@ def main():
         # prepend the output directory
         fname_c = os.path.join(outdir, fname_c)
         cluster_fnames.append(fname_c)
-        color_c = color[mask,:]
+        color_c = color[order[boundaries[c]:boundaries[c + 1]], :]
         if cluster_size:
             cluster_colors.append(numpy.mean(color_c,0))
         else:

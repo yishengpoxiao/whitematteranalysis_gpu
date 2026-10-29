@@ -70,13 +70,13 @@ class OutlierParallelTests(unittest.TestCase):
         import torch
         reference, rejected = self.run_outliers('original', 1)
         streams = set()
-        real_matrix = wma.gpu.distance.distance_matrix_from_arrays
+        real_reduction = wma.gpu.distance.similarity_row_sums_from_arrays
 
-        def matrix(*args, **kwargs):
+        def reduction(*args, **kwargs):
             streams.add(torch.cuda.current_stream().cuda_stream)
-            return real_matrix(*args, **kwargs)
+            return real_reduction(*args, **kwargs)
 
-        with patch.object(wma.gpu.distance, 'distance_matrix_from_arrays', side_effect=matrix):
+        with patch.object(wma.gpu.distance, 'similarity_row_sums_from_arrays', side_effect=reduction):
             for workers in (1, 4, 0):
                 mask, count = self.run_outliers('gpu', workers)
                 np.testing.assert_array_equal(mask, reference)

@@ -212,15 +212,28 @@ def main():
         if backend:
             subject_array = wma.gpu.fiber_tensors.polydata_to_numpy(pd_subject, 15)
             if backend == 'gpu':
-                matrix = wma.gpu.distance.distance_matrix_from_arrays
-                parallel = {}
+                (similarity_sums, distance_sums) = wma.gpu.distance.similarity_row_sums_from_arrays(
+                    subject_array, atlas_array, 0., distance_method=distance_method,
+                    bilateral=bilateral, sigmasq=cluster_local_sigma * cluster_local_sigma,
+                    sqrt_distance_sums=True)
+                total_similarity_subject = similarity_sums / number_fibers_in_atlas_cluster
+                cluster_mean_distances = distance_sums / number_fibers_in_atlas_cluster
+                (total_similarity_subject, total_similarity_atlas,
+                 refined) = wma.gpu.distance.refine_outlier_probabilities_from_arrays(
+                    subject_array, atlas_array, total_similarity_subject,
+                    total_similarity_atlas, cluster_outlier_std_threshold,
+                    sigmasq=cluster_local_sigma * cluster_local_sigma,
+                    bilateral=bilateral, distance_method=distance_method)
+                if refined:
+                    print("cluster", c, "refined near-cutoff probabilities with CPU/NumPy")
             else:
                 matrix = wma.gpu.cpu_backend._distance_matrix
                 parallel = dict(number_of_jobs=1)
-            cluster_distances = matrix(subject_array, atlas_array, 0.,
-                distance_method=distance_method, bilateral=bilateral, **parallel).T
-            cluster_similarity_subject = wma.similarity.distance_to_similarity(
-                cluster_distances, cluster_local_sigma * cluster_local_sigma)
+                cluster_distances = matrix(subject_array, atlas_array, 0.,
+                    distance_method=distance_method, bilateral=bilateral, **parallel).T
+                cluster_similarity_subject = wma.similarity.distance_to_similarity(
+                    cluster_distances, cluster_local_sigma * cluster_local_sigma)
+                total_similarity_subject = numpy.sum(cluster_similarity_subject, axis=0) / number_fibers_in_atlas_cluster
         else:
             cluster_distances = wma.cluster._pairwise_distance_matrix(pd_atlas, 0.0,
                 number_of_jobs=1, bilateral=bilateral, distance_method=distance_method)
@@ -238,7 +251,7 @@ def main():
         #  get total similarity (probability) based on the atlas, and normalize by the number of fibers used in the comparison for easier comparison across clusters
         if not backend:
             total_similarity_atlas = (numpy.sum(cluster_similarity_atlas, axis=1) - 1.0) / number_fibers_in_atlas_cluster
-        total_similarity_subject = numpy.sum(cluster_similarity_subject, axis=0)/ number_fibers_in_atlas_cluster
+            total_similarity_subject = numpy.sum(cluster_similarity_subject, axis=0)/ number_fibers_in_atlas_cluster
 
         #print "SHAPE total similarity:", total_similarity_atlas.shape, total_similarity_subject.shape
 
@@ -269,8 +282,9 @@ def main():
         pd_c = wma.filter.mask(pd_subject, mask, verbose=False, preserve_point_data=True, preserve_cell_data=True)
         wma.io.write_polydata(pd_c, pd_out_fname)
 
-        cluster_distances = numpy.sqrt(cluster_distances)
-        cluster_mean_distances = numpy.mean(cluster_distances, axis=0)
+        if backend != 'gpu':
+            cluster_distances = numpy.sqrt(cluster_distances)
+            cluster_mean_distances = numpy.mean(cluster_distances, axis=0)
         mask = mask == 1
 
         log_str = str(c) + '\t' + str(number_fibers_in_subject_cluster) + '\t' + str(number_fibers_in_subject_cluster-number_rejected) + '\t' + str(number_rejected) + '\t' + str(float(number_rejected)/number_fibers_in_subject_cluster) + '\t' + str(numpy.mean(cluster_mean_distances)) + '\t' + str(numpy.mean(cluster_mean_distances[mask])) + '\t' + str(numpy.mean(total_similarity_subject)) + '\t' + str(numpy.mean(total_similarity_subject[mask]))

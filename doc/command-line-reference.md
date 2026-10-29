@@ -251,17 +251,22 @@ Slicer with SlicerDMRI; use a working display or virtual display.
 | `-ts DIR` | Alternative to `-t` | Sorted transform files paired with sorted input tractograms; counts must match. |
 | `-i` | Off | Invert the transform before applying it. |
 | `-j N` | `1` | Number of independent Slicer workers; a shared transform is batched across workers. |
+| `--split-output-directory DIR` | Off | Also write left, right and commissural subsets under this directory, using the same hardened polydata while retaining the complete transformed files in `outputDirectory`. |
 | `-v` / `--version` | Version action | Print the program version and exit. |
 
 ```shell
 python bin/wm_harden_transform.py \
   work/cleaned/subject_registered_outlier_removed work/native /path/to/Slicer \
-  -t work/subject_to_atlas.tfm -i -j 4
+  -t work/subject_to_atlas.tfm -i -j 4 \
+  --split-output-directory work/separated
 ```
 
 Output filenames match the inputs. Successful runs write
 `transform_complete.log`; failed worker logs remain for inspection. Existing
-output files are skipped by the helper, so use a fresh destination to recompute.
+transformed files are reused. With `--split-output-directory`, missing split
+files are repaired from an existing transformed file; all three split folders
+are checked before the completion marker is written. Omit the option to produce
+only the complete transformed files.
 
 ### harden_transform_with_slicer.py
 
@@ -279,17 +284,23 @@ batch use.
 | `outdir` | Required positional | Existing output directory; create it first. |
 | `partition_index` | Optional positional, `0` | Zero-based partition index. |
 | `partition_count` | Optional positional, `1` | Total partitions; processes sorted files at `[partition_index::partition_count]`. |
+| `--split-output-directory DIR` | Off | Also write left, right and commissural subsets from the hardened polydata; create the three subdirectories first. |
 | `-v` / `--version` | Version action | Print the program version and exit. |
 
 ```shell
 mkdir -p work/hardened
+mkdir -p work/separated/tracts_left_hemisphere \
+  work/separated/tracts_right_hemisphere work/separated/tracts_commissural
 /path/to/Slicer --no-main-window \
   --python-script bin/harden_transform_with_slicer.py \
   data/subject.vtk work/subject_to_atlas.tfm 0 work/hardened 0 1 \
+  --split-output-directory work/separated \
   --python-code 'slicer.app.quit()'
 ```
 
-Writes the original filename under `outdir`; already existing outputs are skipped.
+Writes the original filename under `outdir`; existing transformed files are
+reused. When split output is requested, missing subsets are generated from the
+saved transformed file.
 
 ## Atlas construction and parcellation
 
@@ -442,14 +453,17 @@ legacy spelling `HemisphereLocataion`); this command does not infer those labels
 | `inputDirectory` | Required positional | Flat directory of hemisphere-labeled clusters. |
 | `outputDirectory` | Required positional | Root for the three separated directories. |
 | `-j N` / `--jobs N` | `1` | Independent cluster-file workers. |
+| `--reuse-complete` | Off | If every expected split filename already exists in all three folders, write the completion marker and skip recomputation. |
 | `-v` / `--version` | Version action | Print the program version and exit. |
 
 ```shell
-python bin/wm_separate_clusters_by_hemisphere.py work/native work/separated -j 4
+python bin/wm_separate_clusters_by_hemisphere.py work/native work/separated -j 4 --reuse-complete
 ```
 
 Creates `tracts_left_hemisphere/`, `tracts_right_hemisphere/` and
 `tracts_commissural/`, retaining indexed cluster files, including empty splits.
+Use `--reuse-complete` to reuse a full set of existing split files or to repair
+the completion marker after verifying them; incomplete sets are recomputed.
 
 ### wm_append_clusters_to_anatomical_tracts.py
 

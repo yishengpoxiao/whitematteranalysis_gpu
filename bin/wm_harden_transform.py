@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 
 import argparse
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -24,15 +25,27 @@ def _build_arg_parser():
     parser.add_argument('-i', action='store_true', dest='inverse_transform', help='Invert the transform.')
     parser.add_argument('-j', dest='numberOfJobs', type=int, default=1,
                         help='Number of Slicer workers. A shared transform uses one batch per worker.')
+    parser.add_argument('--split-output-directory', default=None,
+                        help='Also write hemisphere subsets from each hardened file.')
     return parser
 
 
-def _run_slicer(polydata, transform, inverse, slicer_path, helper, outdir, partition, partitions, log):
+def _run_slicer(polydata, transform, inverse, slicer_path, helper, outdir, partition,
+                partitions, log, split_output_dir=None):
     command = [str(slicer_path), '--no-main-window', '--python-script', helper,
                str(polydata), str(transform), str(int(inverse)), str(outdir),
-               str(partition), str(partitions), '--python-code', 'slicer.app.quit()']
+               str(partition), str(partitions)]
+    if split_output_dir is not None:
+        command.extend(['--split-output-directory', str(split_output_dir)])
+    command.extend(['--python-code', 'slicer.app.quit()'])
+    environment = None
+    if split_output_dir is not None:
+        environment = os.environ.copy()
+        environment.pop('PYTHONPATH', None)
+        environment.setdefault('WMA_VTP_COMPRESSION', 'lz4')
     with log.open('w') as stream:
-        subprocess.run(command, stdout=stream, stderr=subprocess.STDOUT, check=True)
+        subprocess.run(command, stdout=stream, stderr=subprocess.STDOUT, check=True,
+                       env=environment)
 
 
 def main():
@@ -40,11 +53,16 @@ def main():
     args = parser.parse_args()
     inputdir, outdir, slicer_path = map(Path, (args.inputDirectory, args.outputDirectory, args.Slicer))
     inputdir, outdir, slicer_path = inputdir.resolve(), outdir.resolve(), slicer_path.resolve()
+    split_output_dir = (Path(args.split_output_directory).resolve()
+                        if args.split_output_directory else None)
     if not inputdir.is_dir():
         parser.error('Input directory does not exist: ' + str(inputdir))
     if not slicer_path.is_file():
         parser.error('Slicer executable does not exist: ' + str(slicer_path))
     outdir.mkdir(parents=True, exist_ok=True)
+    if split_output_dir is not None:
+        for folder in ('tracts_left_hemisphere', 'tracts_right_hemisphere', 'tracts_commissural'):
+            (split_output_dir / folder).mkdir(parents=True, exist_ok=True)
     inputs = wma.io.list_vtk_files(str(inputdir))
     workers = min(effective_n_jobs(args.numberOfJobs), max(1, len(inputs)))
     helper = str(Path(__file__).resolve().with_name('harden_transform_with_slicer.py'))
@@ -71,12 +89,18 @@ def main():
     print('Slicer worker logs: ' + str(logs), flush=True)
     Parallel(n_jobs=workers, prefer='threads')(
         delayed(_run_slicer)(polydata, transform, args.inverse_transform, slicer_path, helper,
-            outdir, index, count, logs/('worker_%04d.log' % task))
+            outdir, index, count, logs/('worker_%04d.log' % task), split_output_dir)
         for task, (polydata, transform, index, count) in enumerate(tasks))
     expected = {Path(path).name for path in inputs}
     actual = {Path(path).name for path in wma.io.list_vtk_files(str(outdir))}
     if not expected.issubset(actual):
         raise RuntimeError('Transformed files are missing; inspect Slicer logs: ' + str(logs))
+    if split_output_dir is not None:
+        for folder in ('tracts_left_hemisphere', 'tracts_right_hemisphere', 'tracts_commissural'):
+            split_files = {Path(path).name for path in wma.io.list_vtk_files(str(split_output_dir / folder))}
+            if not expected.issubset(split_files):
+                raise RuntimeError('Hemisphere outputs are missing from %s; inspect Slicer logs: %s'
+                                   % (folder, logs))
     shutil.rmtree(logs)
     marker.write_text('Transforms completed for %d files.\n' % len(inputs))
     print('Transforms completed for %d files.' % len(inputs), flush=True)

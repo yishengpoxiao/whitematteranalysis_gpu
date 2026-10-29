@@ -131,6 +131,18 @@ class FileStageTests(unittest.TestCase):
             self.run_cli('wm_separate_clusters_by_hemisphere.py', [current, separated, '-j', workers])
             self.compare_directories(expected, separated)
             self.assertTrue((separated/'hemisphere_separation_complete.log').is_file())
+            if workers == 1:
+                marker = separated/'hemisphere_separation_complete.log'
+                marker.unlink()
+                self.run_cli('wm_separate_clusters_by_hemisphere.py',
+                    [current, separated, '--reuse-complete'])
+                self.assertTrue(marker.is_file())
+                marker.unlink()
+                missing = next((separated/'tracts_left_hemisphere').glob('cluster_*.vtp'))
+                missing.unlink()
+                self.run_cli('wm_separate_clusters_by_hemisphere.py',
+                    [current, separated, '--reuse-complete'])
+                self.compare_directories(expected, separated)
 
     def test_point_labels_use_last_point_and_preserve_empty_lines(self):
         data = tractography(3)

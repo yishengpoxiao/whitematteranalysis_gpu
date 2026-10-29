@@ -562,17 +562,12 @@ def remove_cluster_outliers(subject_polydata, cluster_idx, cluster_count,
         if not os.path.isfile(filename):
             return c, indices, 0, 'missing'
         kwargs = dict(bilateral=bilateral, distance_method=distance_method)
-        if use_gpu or cpu_fast:
+        if use_gpu:
             subject_array = subject_arrays[indices]
-            # Bound each worker's temporary distance tensors, including bilateral
-            # and forward/reversed comparisons. Full result matrices live on CPU.
-            budget = gpu_budget if use_gpu else (16 << 20)
-            if use_gpu:
-                if not hasattr(worker_state, 'stream'):
-                    worker_state.stream = torch.cuda.Stream(device=device)
-                stream_context = torch.cuda.stream(worker_state.stream)
-            else:
-                stream_context = nullcontext()
+            budget = gpu_budget
+            if not hasattr(worker_state, 'stream'):
+                worker_state.stream = torch.cuda.Stream(device=device)
+            stream_context = torch.cuda.stream(worker_state.stream)
             with stream_context:
                 from whitematteranalysis.gpu.atlas_cache import load_reference
                 atlas_array, total_atlas = load_reference(filename, cluster_local_sigmasq,
@@ -580,15 +575,33 @@ def remove_cluster_outliers(subject_polydata, cluster_idx, cluster_count,
                 n_atlas = len(atlas_array)
                 if not n_atlas:
                     return c, indices, 0, 'empty'
-                tile_rows = max(1, budget // (n_atlas * 15 * 8 * 12))
-                if use_gpu:
-                    matrix = wma.gpu.distance.distance_matrix_from_arrays
-                    parallel = {}
-                else:
-                    matrix = wma.gpu.cpu_backend._distance_matrix
-                    parallel = dict(number_of_jobs=1)
-                distances_subject = matrix(subject_array, atlas_array, 0.,
-                    tile_rows=tile_rows, **parallel, **kwargs).T
+                similarity_sums = wma.gpu.distance.similarity_row_sums_from_arrays(
+                    subject_array, atlas_array, 0., distance_method=distance_method,
+                    bilateral=bilateral, sigmasq=cluster_local_sigmasq,
+                    tile_rows=max(1, budget // (n_atlas * 15 * 8 * 12)))
+            total_subject = similarity_sums / n_atlas
+            total_subject, total_atlas, _refined = \
+                wma.gpu.distance.refine_outlier_probabilities_from_arrays(
+                    subject_array, atlas_array, total_subject, total_atlas,
+                    std_threshold, sigmasq=cluster_local_sigmasq,
+                    bilateral=bilateral,
+                    tile_rows=max(1, budget // (n_atlas * 15 * 8 * 12)),
+                    distance_method=distance_method)
+        elif cpu_fast:
+            subject_array = subject_arrays[indices]
+            budget = 16 << 20
+            from whitematteranalysis.gpu.atlas_cache import load_reference
+            atlas_array, total_atlas = load_reference(filename, cluster_local_sigmasq,
+                distance_method, bilateral, 'cpu', tile_bytes=budget)
+            n_atlas = len(atlas_array)
+            if not n_atlas:
+                return c, indices, 0, 'empty'
+            tile_rows = max(1, budget // (n_atlas * 15 * 8 * 12))
+            distances_subject = wma.gpu.cpu_backend._distance_matrix(subject_array, atlas_array,
+                0., tile_rows=tile_rows, number_of_jobs=1, **kwargs).T
+            similarity_subject = wma.similarity.distance_to_similarity(
+                distances_subject, cluster_local_sigmasq)
+            total_subject = numpy.sum(similarity_subject, axis=0) / n_atlas
         else:
             atlas_pd = wma.io.read_polydata(filename)
             n_atlas = atlas_pd.GetNumberOfLines()
@@ -600,10 +613,12 @@ def remove_cluster_outliers(subject_polydata, cluster_idx, cluster_count,
                 subject_clusters[c], atlas_pd, 0., number_of_jobs=1, **kwargs)
             similarity_atlas = wma.similarity.distance_to_similarity(distances_atlas, cluster_local_sigmasq)
             total_atlas = (numpy.sum(similarity_atlas, axis=1) - 1.) / n_atlas
-        similarity_subject = wma.similarity.distance_to_similarity(distances_subject, cluster_local_sigmasq)
-        total_subject = numpy.sum(similarity_subject, axis=0) / n_atlas
+        if not (use_gpu or cpu_fast):
+            similarity_subject = wma.similarity.distance_to_similarity(
+                distances_subject, cluster_local_sigmasq)
+            total_subject = numpy.sum(similarity_subject, axis=0) / n_atlas
         cutoff = numpy.mean(total_atlas) - std_threshold * numpy.std(total_atlas)
-        keep = total_subject >= cutoff
+        keep = ~(total_subject < cutoff)
         return c, indices[keep], int((~keep).sum()), None
 
     rejected_total = 0

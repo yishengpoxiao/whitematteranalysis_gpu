@@ -45,6 +45,8 @@ def _build_arg_parser():
 
     parser.add_argument('-j', '--jobs', dest='number_of_jobs', type=int, default=1,
                         help='Number of independent cluster-file workers (default: 1).')
+    parser.add_argument('--reuse-complete', action='store_true',
+                        help='Write the completion marker without recomputing when every expected split file exists.')
 
     return parser
 
@@ -106,11 +108,6 @@ def read_mask_location_from_vtk(inpd):
 
 
 def _process_cluster(fname, outdir):
-    outdir_right = os.path.join(outdir, "tracts_right_hemisphere")
-    outdir_left = os.path.join(outdir, "tracts_left_hemisphere")
-    outdir_commissure = os.path.join(outdir, "tracts_commissural")
-
-
     # figure out filename and extension
     fname_base = os.path.basename(fname)
 
@@ -130,25 +127,20 @@ def _process_cluster(fname, outdir):
         print("Error: Not all fibers in", fname, "is labeled with hemisphere location information.")
         raise RuntimeError("Hemisphere labels are missing or incomplete: " + fname)
 
-    # output separated clusters
-    mask_right = numpy.zeros(pd.GetNumberOfLines())
-    mask_left = numpy.zeros(pd.GetNumberOfLines())
-    mask_commissure = numpy.zeros(pd.GetNumberOfLines())
+    split_polydata(pd, mask_location, fname_base, outdir)
 
-    mask_left[numpy.where(mask_location==1)[0]] = 1
-    mask_right[numpy.where(mask_location==2)[0]] = 1
-    mask_commissure[numpy.where(mask_location==3)[0]] = 1
 
-    pd_right = wma.filter.mask(pd, mask_right, preserve_point_data=True, preserve_cell_data=True, verbose=False)
-    pd_left = wma.filter.mask(pd, mask_left, preserve_point_data=True, preserve_cell_data=True, verbose=False)
-    pd_commissure = wma.filter.mask(pd, mask_commissure, preserve_point_data=True, preserve_cell_data=True, verbose=False)
-
-    fname_output = os.path.join(outdir_right, fname_base)
-    wma.io.write_polydata(pd_right, fname_output)
-    fname_output = os.path.join(outdir_left, fname_base)
-    wma.io.write_polydata(pd_left, fname_output)
-    fname_output = os.path.join(outdir_commissure, fname_base)
-    wma.io.write_polydata(pd_commissure, fname_output)
+def split_polydata(pd, mask_location, fname_base, outdir):
+    """Write the three hemisphere subsets from an already labeled polydata."""
+    masks = {1: mask_location == 1, 2: mask_location == 2, 3: mask_location == 3}
+    geometry = wma.filter._lines_offsets_connectivity(pd)
+    for location, folder in ((1, 'tracts_left_hemisphere'),
+                             (2, 'tracts_right_hemisphere'),
+                             (3, 'tracts_commissural')):
+        output = wma.filter.mask(pd, masks[location], preserve_point_data=True,
+                                 preserve_cell_data=True, verbose=False,
+                                 _geometry=geometry)
+        wma.io.write_polydata(output, os.path.join(outdir, folder, fname_base))
 
 
 def main():
@@ -192,6 +184,16 @@ def main():
     input_polydatas = list_cluster_files(args.inputDirectory)
     
     number_of_clusters = len(input_polydatas)
+
+    if args.reuse_complete:
+        expected = {os.path.basename(path) for path in input_polydatas}
+        output_dirs = [outdir_right, outdir_left, outdir_commissure]
+        if all(expected.issubset({os.path.basename(path) for path in list_cluster_files(folder)})
+               for folder in output_dirs):
+            with open(marker, 'w') as stream:
+                stream.write('Hemisphere separation completed for %d clusters.\n' % number_of_clusters)
+            print('All expected hemisphere outputs exist; reusing completed split files.')
+            return
     
     print(f"<{os.path.basename(__file__)}> Input number of vtk/vtp files: ", number_of_clusters)
     

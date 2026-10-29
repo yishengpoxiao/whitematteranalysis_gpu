@@ -10,6 +10,15 @@ function all_clusters_present {
     return 0
 }
 
+function all_hemisphere_clusters_present {
+    local directory="$1"
+    local hemisphere
+    for hemisphere in left_hemisphere right_hemisphere commissural; do
+        all_clusters_present "$directory/tracts_$hemisphere" || return 1
+    done
+    return 0
+}
+
 function Usage {
     cat <<USAGE
 Usage:
@@ -345,17 +354,21 @@ fi
 
 echo "<wm_apply_ORG_atlas_to_subject> Transform fiber clusters back to input tractography space."
 FiberClustersInTractographySpace=$OutputCaseFolder/FiberClustering/TransformedClusters/${caseID}
+SeparatedClustersFolder=$OutputCaseFolder/FiberClustering/SeparatedClusters
 if [ "$RegMode" == "rig" ]; then
 	
 	tfm=$RegistrationFolder/${caseID}/output_tractography/itk_txform_${caseID}.tfm
 	
-	if [ ! -f "$FiberClustersInTractographySpace/transform_complete.log" ]; then
+	if [ ! -f "$FiberClustersInTractographySpace/transform_complete.log" ] || \
+		! all_clusters_present "$FiberClustersInTractographySpace"; then
 		if [ $VX == 0 ]; then
 			wm_harden_transform.py -j "$NumThreads" -i -t "$tfm" \
-				"$FiberClusteringOutlierRemFolder/${FCcaseID}_outlier_removed" "$FiberClustersInTractographySpace" "$SlicerPath" || exit 1
+				"$FiberClusteringOutlierRemFolder/${FCcaseID}_outlier_removed" "$FiberClustersInTractographySpace" "$SlicerPath" \
+				--split-output-directory "$SeparatedClustersFolder" || exit 1
 		else
 			xvfb-run -a wm_harden_transform.py -j "$NumThreads" -i -t "$tfm" \
-				"$FiberClusteringOutlierRemFolder/${FCcaseID}_outlier_removed" "$FiberClustersInTractographySpace" "$SlicerPath" || exit 1
+				"$FiberClusteringOutlierRemFolder/${FCcaseID}_outlier_removed" "$FiberClustersInTractographySpace" "$SlicerPath" \
+				--split-output-directory "$SeparatedClustersFolder" || exit 1
 		fi
 	else
 		echo " - transform has been done."
@@ -364,7 +377,8 @@ elif [ "$RegMode" == "nonrig" ]; then
 
 	tfm=$RegistrationFolder/${caseID}_reg/output_tractography/itk_txform_${caseID}_reg.tfm
 	
-	if [ ! -f "$FiberClustersInTractographySpace/tmp/transform_complete.log" ]; then
+	if [ ! -f "$FiberClustersInTractographySpace/tmp/transform_complete.log" ] || \
+		! all_clusters_present "$FiberClustersInTractographySpace/tmp"; then
 		if [ $VX == 0 ]; then
 			wm_harden_transform.py -j "$NumThreads" -i -t "$tfm" \
 				"$FiberClusteringOutlierRemFolder/${FCcaseID}_outlier_removed" "$FiberClustersInTractographySpace/tmp" "$SlicerPath" || exit 1
@@ -378,13 +392,16 @@ elif [ "$RegMode" == "nonrig" ]; then
 
 	tfm=$RegistrationFolder/${caseID}/output_tractography/itk_txform_${caseID}.tfm
 	
-	if [ ! -f "$FiberClustersInTractographySpace/transform_complete.log" ]; then
+	if [ ! -f "$FiberClustersInTractographySpace/transform_complete.log" ] || \
+		! all_clusters_present "$FiberClustersInTractographySpace"; then
 		if [ $VX == 0 ]; then
 			wm_harden_transform.py -j "$NumThreads" -i -t "$tfm" \
-				"$FiberClustersInTractographySpace/tmp" "$FiberClustersInTractographySpace" "$SlicerPath" || exit 1
+				"$FiberClustersInTractographySpace/tmp" "$FiberClustersInTractographySpace" "$SlicerPath" \
+				--split-output-directory "$SeparatedClustersFolder" || exit 1
 		else
 			xvfb-run -a wm_harden_transform.py -j "$NumThreads" -i -t "$tfm" \
-				"$FiberClustersInTractographySpace/tmp" "$FiberClustersInTractographySpace" "$SlicerPath" || exit 1
+				"$FiberClustersInTractographySpace/tmp" "$FiberClustersInTractographySpace" "$SlicerPath" \
+				--split-output-directory "$SeparatedClustersFolder" || exit 1
 		fi
 	else
 		echo " - transform has been done."
@@ -402,10 +419,10 @@ if [ $numfiles -lt 800 ]; then
 fi
 
 echo "<wm_apply_ORG_atlas_to_subject> Separate fiber clusters by hemisphere."
-SeparatedClustersFolder=$OutputCaseFolder/FiberClustering/SeparatedClusters
-if [ ! -f "$SeparatedClustersFolder/hemisphere_separation_complete.log" ]; then
+if [ ! -f "$SeparatedClustersFolder/hemisphere_separation_complete.log" ] || \
+	! all_hemisphere_clusters_present "$SeparatedClustersFolder"; then
 
-	WMA_VTP_COMPRESSION="${WMA_VTP_COMPRESSION:-lz4}" wm_separate_clusters_by_hemisphere.py -j "$NumThreads" "$FiberClustersInTractographySpace" "$SeparatedClustersFolder" || exit 1
+	WMA_VTP_COMPRESSION="${WMA_VTP_COMPRESSION:-lz4}" wm_separate_clusters_by_hemisphere.py --reuse-complete -j "$NumThreads" "$FiberClustersInTractographySpace" "$SeparatedClustersFolder" || exit 1
 
 else
 	echo " - separation has been done."

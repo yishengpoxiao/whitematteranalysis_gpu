@@ -248,6 +248,135 @@ def distance_matrix_from_arrays(Xn, Xm, threshold, distance_method='Hausdorff',
                             sigmasq, gpu_float32, tile_rows)
 
 
+def similarity_row_sums_from_arrays(X_queries, X_fixed, threshold,
+                                    distance_method='Mean', bilateral=False,
+                                    sigmasq=400., gpu_float32=None,
+                                    tile_rows=None, sqrt_distance_sums=False):
+    """Reduce query-to-reference similarities on the GPU, one query row at a time.
+
+    This is for outlier scores, which need the sum across reference fibers but
+    never need the full query-by-reference matrix. If requested, also return
+    per-query sums of the square roots of the same Mean-distance values for the
+    CLI's mean-distance log fields.
+    """
+    if torch is None:
+        raise RuntimeError("torch is not available, cannot use the GPU distance backend.")
+    if sqrt_distance_sums and distance_method != 'Mean':
+        raise ValueError("sqrt_distance_sums is only defined for Mean distance")
+
+    X_queries = numpy.asarray(X_queries)
+    X_fixed = numpy.asarray(X_fixed)
+    dtype = torch.float32 if float32_enabled(gpu_float32) else torch.float64
+    out_dtype = numpy.float32 if dtype == torch.float32 else numpy.float64
+    similarity_sums = numpy.empty(X_queries.shape[0], dtype=out_dtype)
+    distance_sums = (numpy.empty(X_queries.shape[0], dtype=out_dtype)
+                     if sqrt_distance_sums else None)
+    if X_queries.shape[0] == 0:
+        return (similarity_sums, distance_sums) if sqrt_distance_sums else similarity_sums
+    if X_fixed.shape[0] == 0:
+        similarity_sums.fill(0.)
+        if sqrt_distance_sums:
+            distance_sums.fill(0.)
+            return similarity_sums, distance_sums
+        return similarity_sums
+
+    device = get_device()
+    fixed = torch.as_tensor(X_fixed, dtype=dtype, device=device)
+    rows = _choose_tile_rows(X_queries.shape[0], X_fixed.shape[0],
+                             X_queries.shape[1], dtype, device,
+                             override=tile_rows)
+    start = 0
+    while start < X_queries.shape[0]:
+        end = min(start + rows, X_queries.shape[0])
+        try:
+            queries = torch.as_tensor(X_queries[start:end], dtype=dtype, device=device)
+            distances = _fiber_block_distances(
+                queries, fixed, threshold, distance_method, sigmasq, bilateral)
+            similarities = torch.exp(-distances / sigmasq)
+            sim_sum = similarities.sum(dim=1)
+            if sqrt_distance_sums:
+                distance_sum = distances.sqrt().sum(dim=1)
+        except torch.cuda.OutOfMemoryError:
+            if end - start == 1:
+                raise
+            torch.cuda.empty_cache()
+            rows = max(1, (end - start) // 2)
+            continue
+
+        similarity_sums[start:end] = sim_sum.cpu().numpy()
+        if sqrt_distance_sums:
+            distance_sums[start:end] = distance_sum.cpu().numpy()
+        start = end
+
+    del fixed
+    return (similarity_sums, distance_sums) if sqrt_distance_sums else similarity_sums
+
+
+def refine_outlier_probabilities_from_arrays(X_subject, X_atlas,
+                                             total_subject, total_atlas,
+                                             std_threshold, sigmasq=400.,
+                                             bilateral=False, gpu_float32=None,
+                                             tile_rows=None,
+                                             distance_method='Mean'):
+    """Recompute near-cutoff outlier probabilities with CPU/NumPy arithmetic.
+
+    Float64 distance, exponential, and reduction operations can differ from
+    NumPy by a few ULPs. Those tiny differences can flip a strict rejection
+    when a subject score is at the atlas-derived cutoff. Keep the fast GPU
+    values when every score is safely away from the cutoff; otherwise recompute
+    atlas rows and only candidate subject rows with the selected CPU metric and
+    NumPy reductions.
+
+    Float32 is an explicitly approximate mode and intentionally skips this
+    refinement. The returned boolean says whether CPU refinement ran.
+    """
+    total_subject = numpy.asarray(total_subject)
+    total_atlas = numpy.asarray(total_atlas)
+    if float32_enabled(gpu_float32):
+        return total_subject, total_atlas, False
+
+    mean_atlas = numpy.mean(total_atlas)
+    std_atlas = numpy.std(total_atlas)
+    cutoff = mean_atlas - std_threshold * std_atlas
+    band = 64. * numpy.finfo(numpy.float64).eps * (1. + abs(std_threshold))
+    candidates = numpy.flatnonzero(numpy.isfinite(total_subject) &
+                                   (numpy.abs(total_subject - cutoff) <= band))
+    if candidates.size == 0 or len(X_atlas) == 0:
+        return total_subject, total_atlas, False
+
+    from .cpu_backend import _distance_matrix as cpu_distance_matrix
+    from ..similarity import distance_to_similarity
+
+    n_atlas = len(X_atlas)
+    # Bound CPU distance temporaries as well as the returned matrix.
+    bytes_per_row = n_atlas * X_atlas.shape[1] * 8 * 12
+    rows = max(1, min(len(X_atlas), (16 << 20) // max(8, bytes_per_row)))
+    if tile_rows is not None:
+        rows = max(1, min(rows, int(tile_rows)))
+
+    exact_atlas = numpy.empty(n_atlas, dtype=numpy.float64)
+    for start in range(0, n_atlas, rows):
+        end = min(start + rows, n_atlas)
+        distances = cpu_distance_matrix(
+            X_atlas[start:end], X_atlas, 0., distance_method=distance_method,
+            bilateral=bilateral, sigmasq=sigmasq,
+            number_of_jobs=1, tile_rows=rows)
+        similarities = distance_to_similarity(distances, sigmasq)
+        exact_atlas[start:end] = (numpy.sum(similarities, axis=1) - 1.) / n_atlas
+
+    exact_subject = total_subject.astype(numpy.float64, copy=True)
+    for start in range(0, candidates.size, rows):
+        selected = candidates[start:start + rows]
+        distances = cpu_distance_matrix(
+            X_subject[selected], X_atlas, 0., distance_method=distance_method,
+            bilateral=bilateral, sigmasq=sigmasq,
+            number_of_jobs=1, tile_rows=rows)
+        # The old subject path transposes atlas x subject before summing.
+        similarities = distance_to_similarity(distances.T, sigmasq)
+        exact_subject[selected] = numpy.sum(similarities, axis=0) / n_atlas
+    return exact_subject, exact_atlas, True
+
+
 def pairwise_similarity_matrix(input_polydata, threshold, sigma,
                                distance_method='Hausdorff', bilateral=False,
                                sigmasq=6400, points_per_fiber=15,

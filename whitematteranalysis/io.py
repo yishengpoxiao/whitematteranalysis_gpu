@@ -896,11 +896,10 @@ def _write_polydata_index(item):
 
 
 def write_polydatas_parallel(polydatas, filenames, jobs=None):
-    """Write read-only polydatas inherited by CPU-only fork workers.
+    """Write independent polydata files without serializing VTK objects.
 
-    Only indices and filenames cross the queue. No VTK serialization or
-    reconstruction is needed; topology, field data and active attributes
-    remain intact. Workers never access CUDA.
+    Fork workers inherit read-only data on Linux. Windows and macOS use
+    threads with a separate writer per file. Workers never access CUDA.
     """
     import multiprocessing
 
@@ -911,9 +910,14 @@ def write_polydatas_parallel(polydatas, filenames, jobs=None):
         for pd, fname in zip(polydatas, filenames):
             write_polydata(pd, fname)
         return
+    import sys
+    if sys.platform == 'darwin' or 'fork' not in multiprocessing.get_all_start_methods():
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=jobs) as pool:
+            list(pool.map(write_polydata, polydatas, filenames))
+        return
     # Slicer's PythonQt stdin lacks close(), which multiprocessing calls
     # in each child before its initializer. Children need no console input.
-    import sys
     stdin = sys.stdin
     try:
         sys.stdin = None
