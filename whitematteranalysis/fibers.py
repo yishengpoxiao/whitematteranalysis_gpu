@@ -14,6 +14,7 @@ import os
 import numpy
 import vtk
 import time
+from ._memory import SmallPages
 
 
 class Fiber:
@@ -322,6 +323,7 @@ class FiberArray:
 
         return fibers
 
+    @SmallPages()
     def convert_from_polydata(self, input_vtk_polydata, points_per_fiber=None):
 
         """Convert input vtkPolyData to the fixed length fiber

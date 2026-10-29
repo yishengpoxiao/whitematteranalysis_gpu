@@ -14,15 +14,16 @@
 import numpy
 import argparse
 import os
-import shutil
-import vtk
 import glob
-import warnings
-from vtk.util.numpy_support import numpy_to_vtk, vtk_to_numpy
 
 from joblib import Parallel, delayed
 
 import whitematteranalysis as wma
+from whitematteranalysis._hemisphere import (
+    assess_polydata, load_location_policy,
+    read_mask_location_from_vtk, write_mask_location_to_vtk,
+)
+from whitematteranalysis._memory import SmallPages
 
 
 def _build_arg_parser():
@@ -74,88 +75,8 @@ def list_cluster_files(input_dir):
     return(input_pd_fnames)
 
 
-def write_mask_location_to_vtk(inpd, mask_location):
-
-    inpointdata = inpd.GetPointData()
-    if inpointdata.GetNumberOfArrays() > 0:
-        point_data_array_indices = list(range(inpointdata.GetNumberOfArrays()))
-        for idx in point_data_array_indices:
-            array = inpointdata.GetArray(idx)
-            if array.GetName() == 'HemisphereLocataion':
-                warnings.warn(
-                    wma.utils.hemisphere_loc_name_typo_warn_msg,
-                    PendingDeprecationWarning)
-                print('  -- HemisphereLocataion is in the input data: skip updating the vtk file.')
-                return inpd
-            elif array.GetName() == 'HemisphereLocation':
-                print('  -- HemisphereLocation is in the input data: skip updating the vtk file.')
-                return inpd
-
-    vtk_array = vtk.vtkDoubleArray()
-    vtk_array.SetName('HemisphereLocation')
-    geometry = wma.filter._lines_offsets_connectivity(inpd)
-    if geometry is not None:
-        values = numpy.repeat(numpy.asarray(mask_location, dtype=numpy.float64), numpy.diff(geometry[0]))
-        vtk_array = numpy_to_vtk(values, deep=True)
-        vtk_array.SetName('HemisphereLocation')
-    else:
-        inpd.GetLines().InitTraversal()
-        for lidx in range(0, inpd.GetNumberOfLines()):
-            ptids = vtk.vtkIdList()
-            inpd.GetLines().GetNextCell(ptids)
-            for pidx in range(0, ptids.GetNumberOfIds()):
-                vtk_array.InsertNextTuple1(mask_location[lidx])
-
-    inpd.GetPointData().AddArray(vtk_array)
-    # inpd.Update()
-
-    return inpd
-
-
-def read_mask_location_from_vtk(inpd):
-
-    def _read_location(_inpd):
-        geometry = wma.filter._lines_offsets_connectivity(_inpd)
-        if geometry is not None:
-            offsets, connectivity, _ = geometry
-            nonempty = numpy.diff(offsets) > 0
-            values = vtk_to_numpy(array).reshape(-1, array.GetNumberOfComponents())[:, 0]
-            mask_location[nonempty] = values[connectivity[offsets[1:][nonempty] - 1]]
-            return True
-        _flag_location = True
-
-        _inpd.GetLines().InitTraversal()
-        for lidx in range(0, _inpd.GetNumberOfLines()):
-            ptids = vtk.vtkIdList()
-            _inpd.GetLines().GetNextCell(ptids)
-            for pidx in range(0, ptids.GetNumberOfIds()):
-                mask_location[lidx] = array.GetTuple(ptids.GetId(pidx))[0]
-
-        return _flag_location
-
-    mask_location = numpy.zeros(inpd.GetNumberOfLines())
-
-    inpointdata = inpd.GetPointData()
-    flag_location = False
-    if inpointdata.GetNumberOfArrays() > 0:
-        point_data_array_indices = list(range(inpointdata.GetNumberOfArrays()))
-        for idx in point_data_array_indices:
-            array = inpointdata.GetArray(idx)
-            if array.GetName() == 'HemisphereLocataion':
-                warnings.warn(
-                    wma.utils.hemisphere_loc_name_typo_warn_msg,
-                    PendingDeprecationWarning)
-                flag_location = _read_location(inpd)
-                break
-            elif array.GetName() == 'HemisphereLocation':
-                flag_location = _read_location(inpd)
-                break
-
-    return flag_location, mask_location
-
-
+@SmallPages()
 def _process_cluster(fname, c_idx, location_data, hemisphere_percent_threshold, outdir):
-    points_per_fiber = 40
     if outdir is not None:
         outdir_right = os.path.join(outdir, "tracts_right_hemisphere")
         outdir_left = os.path.join(outdir, "tracts_left_hemisphere")
@@ -169,63 +90,9 @@ def _process_cluster(fname, c_idx, location_data, hemisphere_percent_threshold, 
     print(f"<{os.path.basename(__file__)}> Separating input file:", fname)
     pd = wma.io.read_polydata(fname)
 
-    flag_location, mask_location = read_mask_location_from_vtk(pd)
-
-     # If HemisphereLocation is not defined in the input vtk file, the location of each fiber in the cluster is decided.
-    if not flag_location:
-        if location_data is None:
-            # internal representation for fast similarity computation
-            # this also detects which hemisphere fibers are in
-            fibers = wma.fibers.FiberArray()
-            fibers.points_per_fiber = points_per_fiber
-            fibers.hemisphere_percent_threshold = hemisphere_percent_threshold
-            # must request hemisphere computation from object
-            fibers.hemispheres = True
-            # Now convert to array with points and hemispheres as above
-            fibers.convert_from_polydata(pd)
-
-            # separate into right and left hemispheres
-            # note: this assumes RAS coordinates as far as right and left labels
-            # LPS would be switched
-            # -------------------------
-
-            mask_location[fibers.index_left_hem] = 1
-            mask_location[fibers.index_right_hem] = 2
-            mask_location[fibers.index_commissure] = 3
-        else:
-            if location_data[c_idx][1] == b'c' or location_data[c_idx][1] == b'ng':
-
-                mask_location[:] = 3
-
-            elif location_data[c_idx][1] == b'h':
-                hemisphere_percent_threshold = 0.5001
-
-                # internal representation for fast similarity computation
-                # this also detects which hemisphere fibers are in
-                fibers = wma.fibers.FiberArray()
-                fibers.points_per_fiber = points_per_fiber
-                fibers.hemisphere_percent_threshold = hemisphere_percent_threshold
-                # must request hemisphere computation from object
-                fibers.hemispheres = True
-                # Now convert to array with points and hemispheres as above
-                fibers.convert_from_polydata(pd)
-
-                # separate into right and left hemispheres
-                # note: this assumes RAS coordinates as far as right and left labels
-                # LPS would be switched
-                # -------------------------
-
-                mask_location[fibers.index_left_hem] = 1
-                mask_location[fibers.index_right_hem] = 2
-
-                if len(fibers.index_commissure) > 0:
-                    if len(fibers.index_left_hem) <= len(fibers.index_right_hem):
-                        mask_location[fibers.index_commissure] = 1
-                    else:
-                        mask_location[fibers.index_commissure] = 2
-
-         # Update the input vtk file
-        pd = write_mask_location_to_vtk(pd, mask_location)
+    pd, mask_location, changed = assess_polydata(
+        pd, c_idx, location_data, hemisphere_percent_threshold)
+    if changed:
         wma.io.write_polydata(pd, fname)
 
     # Preserve the original unlabeled-fiber check.
@@ -274,17 +141,8 @@ def main():
             print(f"<{os.path.basename(__file__)}> Cluster location file is assigned but the file", clusterLocationFile, "does not exist.")
             exit()
         else:
-            location_data = numpy.loadtxt(open(clusterLocationFile, "rb"),
-                                          dtype={'names': ('Cluster Index', 'Location Label'), 'formats': ('S17', 'S1')},
-                                          delimiter="\t", skiprows=1)
+            location_data = load_location_policy(clusterLocationFile)
 
-            # change CPC to be hemispheric
-            location_data[145][1] = b'h'
-            location_data[159][1] = b'h'
-            location_data[557][1] = b'h'
-            location_data[677][1] = b'h'
-            location_data[770][1] = b'h'
-    
     # default to be changed if user input is there
     hemisphere_percent_threshold = 0.6
     if args.hemispherePercentThreshold is not None:

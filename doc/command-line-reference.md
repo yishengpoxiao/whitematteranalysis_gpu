@@ -100,6 +100,10 @@ assessment, inverse transformation to subject space, hemisphere separation and
 anatomical tract assembly. Diffusion-measure export is optional. Requires
 installed WMA commands and Slicer with **SlicerDMRI**.
 
+The shell pipeline passes the atlas hemisphere-location table to outlier
+removal, which labels the outlier outputs and writes the existing assessment
+marker. The standalone assessment stage then skips its extra read and rewrite.
+
 | Argument | Default / requirement | Meaning |
 | --- | --- | --- |
 | `-i FILE` | Required | Input subject tractography. |
@@ -395,6 +399,7 @@ matching file counts alone are insufficient.
 | `outputDirectory` | Required positional | Output root. |
 | `-cluster_outlier_std X` | `2.0` | Rejection threshold in standard deviations; smaller values reject more strictly. |
 | `-advanced_only_outlier_sigma MM` | `20.0` | Local probability kernel scale. |
+| `--hemisphere-location-file FILE` | Off | Optional atlas cluster location table. When supplied, writes `HemisphereLocation` with each outlier-removed cluster and creates the hemisphere-assessment completion marker after every worker succeeds. |
 | `-j N` | `1` | Parallel worker budget for cluster processing. |
 | `-verbose` | Off | Extra console output. |
 | `-v` / `--version` | Version action | Print the program version and exit. |
@@ -404,12 +409,23 @@ matching file counts alone are insufficient.
 python bin/wm_cluster_remove_outliers.py work/clusters/subject_registered \
   atlases/ORG-800FC-100HCP work/cleaned \
   -cluster_outlier_std 2 -j 4 -gpu on -gpu_devices 0
+
+# Optional: fuse atlas-space hemisphere assessment into outlier output
+python bin/wm_cluster_remove_outliers.py work/clusters/subject_registered \
+  atlases/ORG-800FC-100HCP work/cleaned \
+  --hemisphere-location-file atlases/ORG-800FC-100HCP/cluster_hemisphere_location.txt \
+  -j 4 -gpu on -gpu_devices 0
 ```
 
 Outputs are under `work/cleaned/subject_registered_outlier_removed/`, retaining
 cluster filenames, with `cluster_log.txt` and copied MRML files. Empty subject
 clusters do not require distance computation; a progress count of processed
-nonempty clusters can therefore be below the atlas's 800 cluster files.
+nonempty clusters can therefore be below the atlas's 800 cluster files. Without
+`--hemisphere-location-file`, outlier behavior is unchanged and no hemisphere
+labels are added. With it, a rerun removes any old
+`cluster_location_by_hemisphere.log`; the marker is recreated only after fused
+assessment completes successfully. The standalone assessment command below
+remains available when you want to label clusters separately.
 
 ### wm_assess_cluster_location_by_hemisphere.py
 

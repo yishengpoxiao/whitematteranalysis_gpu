@@ -33,10 +33,12 @@ except ImportError:
     print(f"<{os.path.basename(__file__)}> Please install joblib for this functionality.")
 
 from . import fibers, similarity, gpu
+from ._memory import SmallPages
 
 verbose = 0
 
 
+@SmallPages()
 def _lines_offsets_connectivity(inpd):
     """Fast access to the line structure of a polydata (VTK >= 9).
 
@@ -263,6 +265,7 @@ def compute_lengths(inpd):
 
     return numpy.array(fiber_lengths), step_size
 
+@SmallPages()
 def preprocess(inpd, min_length_mm,
                remove_u=False,
                remove_u_endpoint_dist=40,
@@ -422,6 +425,7 @@ def downsample(inpd, output_number_of_lines, return_indices=False, preserve_poin
         return outpd
 
 
+@SmallPages()
 def mask(inpd, fiber_mask, color=None, preserve_point_data=False, preserve_cell_data=True, verbose=True,
          _geometry=None, _line_indices=None):
     """ Keep lines and their points where fiber_mask == 1.

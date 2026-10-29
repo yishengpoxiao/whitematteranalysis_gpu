@@ -21,6 +21,7 @@ import numpy
 
 from .config import get_device, config
 from . import embedding_kernel
+from .._memory import SmallPages
 
 try:
     import torch
@@ -157,6 +158,7 @@ def _atlas_embedding_block(B, atlas, prepared):
             host[:, -2].astype(numpy.int32), host[:, -1].copy())
 
 
+@SmallPages()
 def atlas_label_embedding_blocks(blocks, atlas, number_fibers):
     """Embed each input block without retaining the full similarity or V matrices."""
     prepared = _prepare_atlas(atlas)

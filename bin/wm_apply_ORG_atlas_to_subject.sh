@@ -320,6 +320,7 @@ echo "<wm_apply_ORG_atlas_to_subject> Outlier fiber removal."
 FiberClusteringOutlierRemFolder=$OutputCaseFolder/FiberClustering/OutlierRemovedClusters
 if ! all_clusters_present "$FiberClusteringOutlierRemFolder/${FCcaseID}_outlier_removed"; then
 	WMA_VTP_COMPRESSION="${WMA_VTP_COMPRESSION:-lz4}" wm_cluster_remove_outliers.py -gpu "$GPUMode" -j $NumThreads \
+		--hemisphere-location-file "$FCAtlasFolder/cluster_hemisphere_location.txt" \
 		$FiberClusteringInitialFolder/$FCcaseID $FCAtlasFolder $FiberClusteringOutlierRemFolder || exit 1
 else
 	echo " - outlier fiber removal has been done."

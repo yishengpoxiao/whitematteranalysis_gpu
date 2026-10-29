@@ -20,6 +20,9 @@ repeated objective evaluation is faster because:
   Triton kernels compute forward/reversed fiber distances and probabilities
   with fewer intermediate tensors and kernel launches. PyTorch provides the
   fallback when Triton is unavailable.
+- Length eligibility and geometry views are reused between registration samples.
+  Selected indices are sorted to preserve input fiber order and the original RNG
+  sequence without building a full-tractogram selection mask each iteration.
 - **Nonrigid workflows:** B-spline evaluation has batch CPU and CUDA paths,
   avoiding a Python call to VTK for every point. These paths support nonrigid
   registration; the README's `rig` benchmark measures rigid plus affine only.
@@ -45,7 +48,9 @@ Source: [CPU backend](../whitematteranalysis/gpu/cpu_backend.py),
   and color means reuse stable label groups instead of rescanning all labels for
   each cluster. On Linux, parallel VTK writers use fork workers with inherited
   read-only polydata; Windows and macOS use one writer per thread. Lossless LZ4
-  intermediate files reduce output overhead.
+  intermediate files reduce output overhead. When rendering is disabled,
+  labeling releases its unfiltered input after length filtering and its complete
+  labeled tractogram after splitting, before the cluster writers start.
 - Atlas construction reuses the accelerated distance/similarity operations.
   Sampling and clustering settings are kept consistent across backends.
 
@@ -54,6 +59,14 @@ Source: [CPU labeling](../whitematteranalysis/gpu/cpu_backend.py),
 [GPU embedding](../whitematteranalysis/gpu/linalg.py),
 [cluster output](../whitematteranalysis/cluster.py),
 [VTK I/O](../whitematteranalysis/io.py).
+
+On Linux, geometry preparation and GPU host-output buffers temporarily disable
+NumPy's huge-page allocation advice to avoid kernel compaction stalls on
+fragmented memory. Overlapping geometry calls share the scope, and the previous
+policy is restored afterward. The hint is process-wide while a scope is active,
+including concurrent allocations in other threads. Set
+`NUMPY_MADVISE_HUGEPAGE=1` to keep NumPy's allocation advice.
+This changes memory allocation, not values or precision.
 
 ## Outlier removal
 
@@ -96,6 +109,12 @@ Their improvements come from vectorized geometry/label access, independent
 file processing, lossless intermediate compression and batching many files into
 Slicer workers. They do not contain the large distance matrices that benefit
 from CUDA.
+
+The ORG shell pipeline assigns hemisphere labels while each outlier-filtered
+cluster is still in memory, before its existing write. It writes the assessment
+completion marker only after all clusters succeed, so the following assessment
+step skips an additional full read and rewrite. Its work is included in the
+outlier-removal timing. The standalone assessment command remains available.
 
 The ORG shell pipeline now splits hemispheres inside each inverse-transform
 worker while the hardened polydata is still in memory. It retains the complete

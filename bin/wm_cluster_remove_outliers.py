@@ -10,6 +10,8 @@ import shutil
 import vtk
 
 import whitematteranalysis as wma
+from whitematteranalysis._hemisphere import assess_polydata, load_location_policy
+from whitematteranalysis._memory import SmallPages
 
 try:
     from joblib import Parallel, delayed
@@ -38,6 +40,8 @@ def _build_arg_parser():
     parser.add_argument(
         'outputDirectory',
         help='The output directory will be created if it does not exist. Outlier-removed subject clusters will be stored in a subdirectory of the output directory. The subdirectory will have the same subject id as contained in the input directory.')
+    parser.add_argument('--hemisphere-location-file',
+                        help='Optional cluster location table; assess and write HemisphereLocation during outlier output.')
     parser.add_argument(
         '-verbose', action='store_true', dest="flag_verbose",
         help='Verbose. Run with -verbose for more text output.')
@@ -83,6 +87,14 @@ def main():
                      % (sorted(atlas_names - subject_names)[:5],
                         sorted(subject_names - atlas_names)[:5]))
     number_ac = len(atlas_clusters)
+    location_data = None
+    if args.hemisphere_location_file:
+        if not os.path.isfile(args.hemisphere_location_file):
+            parser.error("Hemisphere location file does not exist: " + args.hemisphere_location_file)
+        location_data = load_location_policy(args.hemisphere_location_file)
+        if len(location_data) != number_ac:
+            parser.error("Number of clusters (%d) is not the same as in the location file (%d)."
+                         % (number_ac, len(location_data)))
     print("Number of atlas and subject clusters:", number_ac, len(subject_clusters))
     
     outdir = args.outputDirectory
@@ -101,6 +113,10 @@ def main():
     if not os.path.exists(outdir):
         print(f"<{os.path.basename(__file__)}> Output directory", outdir, "does not exist, creating it.")
         os.makedirs(outdir)
+
+    hemisphere_marker = os.path.join(outdir, 'cluster_location_by_hemisphere.log')
+    if os.path.exists(hemisphere_marker):
+        os.remove(hemisphere_marker)
     
     if args.numberOfJobs is not None:
         number_of_jobs = int(args.numberOfJobs)
@@ -162,7 +178,16 @@ def main():
     print("Standard deviation for fiber outlier removal after clustering (accurate local probability): ", cluster_outlier_std_threshold)
     backend = 'gpu' if wma.gpu.use_gpu() else ('cpu' if wma.gpu.config.cpu_fast_enabled() else None)
 
-    def outlier_removal_one_cluster(ca, cs, outdir, c):
+    def outlier_removal_one_cluster(ca, cs, outdir, c, location_data):
+
+        def write_output(polydata, path):
+            if location_data is not None:
+                with SmallPages():
+                    polydata, labels, _ = assess_polydata(polydata, c - 1, location_data)
+                if len(numpy.where(labels == 0)[0]) > 1:
+                    print("Error: Not all fibers in", path, "is labeled with hemisphere location infromation.")
+                    raise RuntimeError("Hemisphere labels are missing or incomplete: " + path)
+            wma.io.write_polydata(polydata, path)
 
         pd_subject = wma.io.read_polydata(cs)
         pd_out_fname = os.path.join(outdir, os.path.basename(cs))
@@ -171,7 +196,7 @@ def main():
 
         # if either cluster is empty, we have to skip outlier removal
         if number_fibers_in_subject_cluster == 0:
-            wma.io.write_polydata(pd_subject, pd_out_fname)
+            write_output(pd_subject, pd_out_fname)
             print("cluster", c, "empty in subject")
             log_str = str(c) + '\t' + str(number_fibers_in_subject_cluster)+'\t 0 \t 0 \t 0 \t 0 \t 0 \t 0 \t 0'
             
@@ -190,7 +215,7 @@ def main():
         if number_fibers_in_atlas_cluster == 0:
             # this should not ever happen. Note that "outlier removed" atlas is temporary and should not be used for classification.
             # (Note the other option is to remove this cluster as it was removed at the end of the iteration for the atlas.)
-            wma.io.write_polydata(pd_subject, pd_out_fname)
+            write_output(pd_subject, pd_out_fname)
             print("cluster", c, "empty in atlas")
             print("ERROR: An atlas should not contain empty clusters. Please use the initial_clusters atlas for this outlier removal script and for subject clustering.")
             log_str = str(c) + '\t' + str(number_fibers_in_subject_cluster)+'\t 0 \t 0 \t 0 \t 0 \t 0 \t 0 \t 0'
@@ -280,7 +305,7 @@ def main():
         mask[reject_idx] = 0
         #print mask, number_fibers_in_subject_cluster, mask.shape, pd_subject.GetNumberOfLines()
         pd_c = wma.filter.mask(pd_subject, mask, verbose=False, preserve_point_data=True, preserve_cell_data=True)
-        wma.io.write_polydata(pd_c, pd_out_fname)
+        write_output(pd_c, pd_out_fname)
 
         if backend != 'gpu':
             cluster_distances = numpy.sqrt(cluster_distances)
@@ -296,7 +321,8 @@ def main():
                 ca,
                 cs,
                 outdir, 
-                c)
+                c,
+                location_data)
             for c, ca, cs in zip(range(1, number_ac+1), atlas_clusters, subject_clusters))
 
     
@@ -304,6 +330,9 @@ def main():
     for logstr in logtrs:
         print(logstr, file=log_file)
     log_file.close()
+    if location_data is not None:
+        with open(hemisphere_marker, 'w') as marker_file:
+            marker_file.write('<wm_assess_cluster_location_by_hemisphere.py> Done!!!')
 
 if __name__ == '__main__':
     main()

@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import numpy as np
 import vtk
-from vtk.util.numpy_support import numpy_to_vtk
+from vtk.util.numpy_support import numpy_to_vtk, vtk_to_numpy
 
 import whitematteranalysis as wma
 from test_output_pipeline import baseline_module
@@ -166,6 +166,58 @@ class RegistrationPreprocessingTests(unittest.TestCase):
         source.Modified()
         changed = registration._preprocessed_indices(source, 'atlas')
         self.assertIsNot(narrower, changed)
+
+        points_changed = registration._preprocessed_indices(source, 'atlas')
+        source.GetPoints().GetData().Modified()
+        self.assertIsNot(points_changed, registration._preprocessed_indices(source, 'atlas'))
+
+        lines_changed = registration._preprocessed_indices(source, 'atlas')
+        source.GetLines().Modified()
+        self.assertIsNot(lines_changed, registration._preprocessed_indices(source, 'atlas'))
+
+    def test_sampling_reuses_cached_vtk_geometry_and_sorted_indices(self):
+        source = fibers_polydata()
+        registration = wma.congeal_to_atlas.SubjectToAtlasRegistration()
+        registration.fiber_length = 3.
+        registration.fiber_length_max = 7.
+        self.assertIsNotNone(wma.filter._lines_offsets_connectivity(source))
+        registration._preprocessed_indices(source, 'atlas')
+        expected = self.legacy_sample(
+            source, 4, 20261030, min_length_mm=3., max_length_mm=7.)
+
+        with patch.object(wma.filter, '_lines_offsets_connectivity',
+                          side_effect=AssertionError('reuse cached geometry')), \
+                patch.object(wma.filter, 'mask', wraps=wma.filter.mask) as mask:
+            actual = registration._sample_preprocessed_polydata(
+                source, 'atlas', 4, 20261030)
+
+        self.assertIsNone(mask.call_args.args[1])
+        np.testing.assert_array_equal(
+            mask.call_args.kwargs['_line_indices'],
+            np.sort(mask.call_args.kwargs['_line_indices']))
+        self.assertIsNotNone(mask.call_args.kwargs['_geometry'])
+        self.assert_polydata_bytes_equal(expected, actual)
+
+    def test_preprocessed_cache_tracks_offsets_and_connectivity_array_mtimes(self):
+        for array_name, position, replacement in (
+                ('GetOffsetsArray', 1, 6),
+                ('GetConnectivityArray', 2, 8)):
+            with self.subTest(array=array_name):
+                source = fibers_polydata()
+                registration = wma.congeal_to_atlas.SubjectToAtlasRegistration()
+                registration.fiber_length = 3.
+                registration.fiber_length_max = 7.
+                before = registration._preprocessed_indices(source, 'atlas')
+                array = getattr(source.GetLines(), array_name)()
+                values = vtk_to_numpy(array)
+                values[position] = replacement
+                array.Modified()
+
+                expected, _, _ = wma.filter._preprocess_indices(
+                    source, 3., max_length_mm=7., verbose=False)
+                actual = registration._preprocessed_indices(source, 'atlas')
+                self.assertIsNot(actual, before)
+                np.testing.assert_array_equal(actual, expected)
 
     def test_iterate_passes_legacy_sampled_arrays_to_optimizer(self):
         source = fibers_polydata(np.float64)

@@ -13,6 +13,7 @@ import os
 import numpy
 import vtk
 import whitematteranalysis as wma
+from ._memory import SmallPages
 
 class SubjectToAtlasRegistration:
 
@@ -105,15 +106,29 @@ class SubjectToAtlasRegistration:
 
     def _preprocessed_indices(self, polydata, role):
         """Reuse length-filter indices until input geometry or limits change."""
-        key = (polydata, polydata.GetMTime(), self.fiber_length, self.fiber_length_max)
+        points = polydata.GetPoints()
+        lines = polydata.GetLines()
+        offsets = (lines.GetOffsetsArray() if lines is not None and
+                   hasattr(lines, 'GetOffsetsArray') else None)
+        connectivity = (lines.GetConnectivityArray() if lines is not None and
+                        hasattr(lines, 'GetConnectivityArray') else None)
+        key = (polydata, polydata.GetMTime(),
+               points.GetMTime() if points is not None else None,
+               points.GetData().GetMTime() if points is not None else None,
+               lines.GetMTime() if lines is not None else None,
+               offsets.GetMTime() if offsets is not None else None,
+               connectivity.GetMTime() if connectivity is not None else None,
+               self.fiber_length, self.fiber_length_max)
         cached = self._preprocessed.get(role)
         if cached is None or cached[0] != key:
             indices, _, _ = wma.filter._preprocess_indices(
                 polydata, self.fiber_length, max_length_mm=self.fiber_length_max,
                 verbose=False)
-            cached = self._preprocessed[role] = (key, indices)
+            geometry = wma.filter._lines_offsets_connectivity(polydata)
+            cached = self._preprocessed[role] = (key, indices, geometry)
         return cached[1]
 
+    @SmallPages()
     def _sample_preprocessed_polydata(self, polydata, role, sample_count, seed):
         eligible = self._preprocessed_indices(polydata, role)
         if polydata.GetNumberOfLines() == 0 or polydata.GetNumberOfPoints() == 0:
@@ -123,6 +138,14 @@ class SubjectToAtlasRegistration:
         else:
             numpy.random.seed(seed)
             selected = eligible[numpy.random.permutation(eligible.size)[:sample_count]]
+        geometry = self._preprocessed[role][2]
+        if geometry is not None:
+            # mask() historically emits kept fibers in input order, even
+            # though the sampled indices above are in RNG order.
+            return wma.filter.mask(
+                polydata, None, preserve_point_data=False,
+                preserve_cell_data=False, verbose=False,
+                _geometry=geometry, _line_indices=numpy.sort(selected))
         fiber_mask = numpy.zeros(polydata.GetNumberOfLines())
         fiber_mask[selected] = 1
         return wma.filter.mask(

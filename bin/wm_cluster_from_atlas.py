@@ -141,6 +141,7 @@ def main():
     # preprocessing step: minimum length
     print(f"<{os.path.basename(__file__)}> Preprocessing by length:", fiber_length, "mm.")
     pd2 = wma.filter.preprocess(pd, fiber_length, return_indices=False, preserve_point_data=True, preserve_cell_data=True,verbose=False)
+    del pd
     
     # preprocessing step: fibers to analyze
     if number_of_fibers is not None:
@@ -148,6 +149,7 @@ def main():
         input_data = wma.filter.downsample(pd2, number_of_fibers, return_indices=False, preserve_point_data=True, preserve_cell_data=True,verbose=False)
     else:
         input_data = pd2
+    del pd2
     
     #-----------------
     # Register if needed
@@ -244,6 +246,8 @@ def main():
     [number_of_clusters, number_of_eigenvectors] = atlas.centroids.shape
     print(f"<{os.path.basename(__file__)}> Cluster indices range from:", 0, "to", number_of_clusters)
     pd_c_list = wma.cluster.mask_all_clusters(output_polydata_s, cluster_numbers_s, number_of_clusters, preserve_point_data=True, preserve_cell_data=True,verbose=True)
+    if not render:
+        del output_polydata_s, input_data
     
     print(f'<{os.path.basename(__file__)}> Saving output cluster files in directory:', outdir)
     # Reuse stable label groups for counts/colors instead of scanning every
