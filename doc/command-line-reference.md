@@ -266,7 +266,7 @@ Output filenames match the inputs. Successful runs write
 transformed files are reused. With `--split-output-directory`, missing split
 files are repaired from an existing transformed file; all three split folders
 are checked before the completion marker is written. Omit the option to produce
-only the complete transformed files.
+only the complete transformed files. Splitting requires existing hemisphere labels.
 
 ### harden_transform_with_slicer.py
 

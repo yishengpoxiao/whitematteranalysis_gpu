@@ -6,31 +6,34 @@ This fork adds CUDA GPU acceleration, a vectorized CPU backend, and a five-modul
 
 ## Full-pipeline performance
 
-On **2026-10-28**, source revision `a698f51` processed C028 (approximately
+On **2026-10-30**, source revision `3afbc09` processed C028 (approximately
 **330,000 streamlines, 3.6 GB**) using `wm_apply_ORG_atlas_to_subject.sh`,
 ORG-800FC-100HCP and ORG-RegAtlas-100HCP. All modes used four physical CPU cores,
 `-n 4 -r rig -x 1 -c 0`, seed 1000 and float64. Hardware: Intel Xeon Gold 6330
-and one RTX 4090; Python 3.8, PyTorch 2.4.1/CUDA 12.1, Slicer 5.2.2 + SlicerDMRI.
-CUDA 12.1 is the benchmark environment, not a requirement.
+and one RTX 4090 (**GPU 0**); Python 3.8, PyTorch 2.4.1/CUDA 12.1,
+Slicer 5.2.2 + SlicerDMRI. CUDA 12.1 describes this test environment, not a requirement.
 
 | Step | Joblib (4 workers), s | CPU matrix, s | CPU speedup | GPU, s | GPU speedup |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Registration (rigid + affine) | 371.4 | 106.4 | 3.49x | 25.7 | 14.46x |
-| Atlas labeling and cluster saving | 1001.2 | 95.6 | 10.47x | 25.5 | 39.19x |
-| Outlier removal | 201.6 | 82.2 | 2.45x | 28.5 | 7.08x |
-| Hemisphere assessment | 15.6 | 14.4 | 1.09x | 24.3 | 0.64x |
-| Inverse transform with Slicer | 32.7 | 30.1 | 1.09x | 47.4 | 0.69x |
-| Hemisphere separation | 9.0 | 8.8 | 1.03x | 8.8 | 1.03x |
-| Anatomical tract assembly | 15.0 | 14.9 | 1.01x | 15.0 | 1.00x |
-| **Total** | **1648.7** | **354.2** | **4.65x** | **178.6** | **9.23x** |
+| Registration (rigid + affine) | 476.5 | 53.1 | 8.97x | 60.8 | 7.83x |
+| Atlas labeling and cluster saving | 920.2 | 108.6 | 8.47x | 51.3 | 17.93x |
+| Outlier removal | 219.4 | 85.0 | 2.58x | 26.7 | 8.22x |
+| Hemisphere assessment | 16.4 | 19.4 | 0.85x | 29.2 | 0.56x |
+| Inverse transform + hemisphere separation | 45.4 | 37.1 | 1.22x | 41.0 | 1.11x |
+| Separation verification | 0.4 | 0.4 | 1.00x | 0.4 | 0.99x |
+| Anatomical tract assembly | 16.5 | 15.2 | 1.08x | 15.1 | 1.09x |
+| **Total** | **1697.2** | **320.6** | **5.29x** | **227.8** | **7.45x** |
 
-Totals: **27.48 min** (joblib), **5.90 min** (CPU matrix), **2.98 min** (GPU).
-Speedups are relative to joblib's original per-fiber mathematical backend within
-the current pipeline; shared I/O improvements apply to all modes. These were
-single sequential runs with fresh outputs and empty atlas caches, four WMA
-workers and one thread per BLAS/OpenMP library. Totals include I/O, startup and
-Slicer processing; filesystem caches and workstation load were not reset.
-The final four stages use identical CPU/Slicer code across modes.
+Totals: **28.29 min** (joblib), **5.34 min** (CPU matrix), **3.80 min** (GPU).
+Speedups compare the original per-fiber joblib backend within the current
+pipeline; shared I/O improvements apply to all modes. Complete runs used fresh
+outputs and empty atlas caches, four WMA workers and one BLAS/OpenMP thread.
+The GPU column is a requested full rerun after page-cache waits affected the
+first GPU run (312.0 s). Totals include I/O and startup; filesystem caches and
+shared workstation load were not reset. Original-input reads took
+73.2 / 4.0 / 10.2 s, respectively; the GPU rerun also spent 18.3 s reading the atlas.
+The final four stages share CPU/Slicer code. Hemisphere splitting now runs
+inside inverse-transform workers; the following step only verifies its outputs.
 
 All modes produced 800 initial, outlier-removed and transformed clusters plus
 74 anatomical tracts (245,946 initial fibers, 130,737 retained, 93,766 anatomical).
@@ -42,14 +45,10 @@ Validation covered all **4,874 VTPs**, the full registered tractogram and
   difference **1.91e-6 mm**, maximum transform-parameter difference **3.30e-13**.
   All passed coordinate tolerances `rtol=1e-6, atol=1e-5` and transform tolerances
   `rtol=1e-10, atol=1e-10`.
-- The new joblib outputs were also byte-identical to the previous `e5abd52` run.
+- The new joblib outputs were also byte-identical to the previous `a698f51` run.
 
-The CPU total retains its measured **58.1 s** input read. Later read-only tests
-reproduced disk/page-cache waits in joblib too; cached reads took **2.3–2.5 s**
-across all modes. Large-file OS read-ahead reduced partial-cache waits in separate
-controls (`WMA_IO_PREFETCH=0` disables it). The full-pipeline table has not been
-adjusted using isolated read tests. See the [acceleration overview](doc/acceleration.md)
-for implementation and numerical validation details.
+See the [acceleration overview](doc/acceleration.md) for implementation and
+numerical validation details.
 
 # GPU and 3D Slicer quick start
 
