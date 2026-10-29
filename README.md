@@ -6,7 +6,7 @@ This fork adds CUDA GPU acceleration, a vectorized CPU backend, and a five-modul
 
 ## Full-pipeline performance
 
-On **2026-10-30**, source revision `3afbc09` processed C028 (approximately
+On **2026-10-30**, source revision `9293224` processed C028 (approximately
 **330,000 streamlines, 3.6 GB**) using `wm_apply_ORG_atlas_to_subject.sh`,
 ORG-800FC-100HCP and ORG-RegAtlas-100HCP. All modes used four physical CPU cores,
 `-n 4 -r rig -x 1 -c 0`, seed 1000 and float64. Hardware: Intel Xeon Gold 6330
@@ -15,25 +15,27 @@ Slicer 5.2.2 + SlicerDMRI. CUDA 12.1 describes this test environment, not a requ
 
 | Step | Joblib (4 workers), s | CPU matrix, s | CPU speedup | GPU, s | GPU speedup |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Registration (rigid + affine) | 476.5 | 53.1 | 8.97x | 60.8 | 7.83x |
-| Atlas labeling and cluster saving | 920.2 | 108.6 | 8.47x | 51.3 | 17.93x |
-| Outlier removal | 219.4 | 85.0 | 2.58x | 26.7 | 8.22x |
-| Hemisphere assessment | 16.4 | 19.4 | 0.85x | 29.2 | 0.56x |
-| Inverse transform + hemisphere separation | 45.4 | 37.1 | 1.22x | 41.0 | 1.11x |
-| Separation verification | 0.4 | 0.4 | 1.00x | 0.4 | 0.99x |
-| Anatomical tract assembly | 16.5 | 15.2 | 1.08x | 15.1 | 1.09x |
-| **Total** | **1697.2** | **320.6** | **5.29x** | **227.8** | **7.45x** |
+| Registration (rigid + affine) | 371.3 | 54.1 | 6.86x | 33.5 | 11.08x |
+| Atlas labeling and cluster saving | 1001.2 | 112.5 | 8.90x | 29.8 | 33.59x |
+| Outlier removal + hemisphere assessment | 214.3 | 90.2 | 2.38x | 25.6 | 8.38x |
+| Inverse transform + hemisphere separation | 54.2 | 36.0 | 1.51x | 55.9 | 0.97x |
+| Separation verification | 0.4 | 0.4 | 1.00x | 0.4 | 0.90x |
+| Anatomical tract assembly | 19.8 | 15.0 | 1.32x | 15.5 | 1.28x |
+| **Total** | **1663.1** | **309.8** | **5.37x** | **163.8** | **10.15x** |
 
-Totals: **28.29 min** (joblib), **5.34 min** (CPU matrix), **3.80 min** (GPU).
+Totals: **27.72 min** (joblib), **5.16 min** (CPU matrix), **2.73 min** (GPU).
 Speedups compare the original per-fiber joblib backend within the current
 pipeline; shared I/O improvements apply to all modes. Complete runs used fresh
 outputs and empty atlas caches, four WMA workers and one BLAS/OpenMP thread.
-The GPU column is a requested full rerun after page-cache waits affected the
-first GPU run (312.0 s). Totals include I/O and startup; filesystem caches and
-shared workstation load were not reset. Original-input reads took
-73.2 / 4.0 / 10.2 s, respectively; the GPU rerun also spent 18.3 s reading the atlas.
-The final four stages share CPU/Slicer code. Hemisphere splitting now runs
-inside inverse-transform workers; the following step only verifies its outputs.
+The GPU column is a complete rerun; the first complete GPU run took **184.6 s**,
+including 77.8 s for inverse transform/separation versus 55.9 s on the rerun.
+Totals include I/O and startup; filesystem caches and shared workstation load
+were not reset. The rerun used 28% less time than the previous 227.8 s measurement
+and 8% less than the historical 178.6 s run; these are individual full runs.
+Hemisphere assessment now runs before outlier output is written, avoiding a
+separate read/rewrite pass. Hemisphere splitting runs inside inverse-transform
+workers; the following step verifies its outputs. These stages use CPU/Slicer
+in every backend mode.
 
 All modes produced 800 initial, outlier-removed and transformed clusters plus
 74 anatomical tracts (245,946 initial fibers, 130,737 retained, 93,766 anatomical).
@@ -41,11 +43,12 @@ Validation covered all **4,874 VTPs**, the full registered tractogram and
 **11 transforms**:
 
 - **CPU matrix:** byte-identical VTP/VTK outputs and exact transform parameters.
-- **GPU:** identical membership, connectivity and attributes; maximum coordinate
-  difference **1.91e-6 mm**, maximum transform-parameter difference **3.30e-13**.
+- **GPU (both complete runs):** identical membership, connectivity and attributes;
+  maximum coordinate difference **1.91e-6 mm**, maximum transform-parameter
+  difference **3.30e-13**.
   All passed coordinate tolerances `rtol=1e-6, atol=1e-5` and transform tolerances
   `rtol=1e-10, atol=1e-10`.
-- The new joblib outputs were also byte-identical to the previous `a698f51` run.
+- The new joblib outputs were also byte-identical to the previous `3afbc09` run.
 
 See the [acceleration overview](doc/acceleration.md) for implementation and
 numerical validation details.
