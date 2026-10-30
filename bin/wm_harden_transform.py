@@ -7,6 +7,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import tempfile
+import time
 from joblib import Parallel, delayed, effective_n_jobs
 
 import whitematteranalysis as wma
@@ -27,22 +28,31 @@ def _build_arg_parser():
                         help='Number of Slicer workers. A shared transform uses one batch per worker.')
     parser.add_argument('--split-output-directory', default=None,
                         help='Also write hemisphere subsets from each hardened file.')
+    parser.add_argument('--profile', action='store_true',
+                        help='Keep worker logs and JSON timings after successful processing.')
     return parser
 
 
 def _run_slicer(polydata, transform, inverse, slicer_path, helper, outdir, partition,
-                partitions, log, split_output_dir=None):
-    command = [str(slicer_path), '--no-main-window', '--python-script', helper,
+                partitions, log, split_output_dir=None, profile_output=None):
+    command = [str(slicer_path), '--no-main-window', '--disable-cli-modules',
+               '--disable-scripted-loadable-modules', '--python-script', helper,
                str(polydata), str(transform), str(int(inverse)), str(outdir),
                str(partition), str(partitions)]
     if split_output_dir is not None:
         command.extend(['--split-output-directory', str(split_output_dir)])
+    if profile_output is not None:
+        command.extend(['--profile-output', str(profile_output)])
     command.extend(['--python-code', 'slicer.app.quit()'])
-    environment = None
+    environment = os.environ.copy()
+    environment.pop('PYTHONPATH', None)
+    for name in ('OMP_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'MKL_NUM_THREADS',
+                 'NUMEXPR_NUM_THREADS', 'ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS'):
+        environment[name] = '1'
     if split_output_dir is not None:
-        environment = os.environ.copy()
-        environment.pop('PYTHONPATH', None)
         environment.setdefault('WMA_VTP_COMPRESSION', 'lz4')
+    if profile_output is not None:
+        environment['WMA_HARDEN_LAUNCH_TIME'] = str(time.monotonic())
     with log.open('w') as stream:
         subprocess.run(command, stdout=stream, stderr=subprocess.STDOUT, check=True,
                        env=environment)
@@ -89,7 +99,8 @@ def main():
     print('Slicer worker logs: ' + str(logs), flush=True)
     Parallel(n_jobs=workers, prefer='threads')(
         delayed(_run_slicer)(polydata, transform, args.inverse_transform, slicer_path, helper,
-            outdir, index, count, logs/('worker_%04d.log' % task), split_output_dir)
+            outdir, index, count, logs/('worker_%04d.log' % task), split_output_dir,
+            logs/('worker_%04d.json' % task) if args.profile else None)
         for task, (polydata, transform, index, count) in enumerate(tasks))
     expected = {Path(path).name for path in inputs}
     actual = {Path(path).name for path in wma.io.list_vtk_files(str(outdir))}
@@ -101,7 +112,8 @@ def main():
             if not expected.issubset(split_files):
                 raise RuntimeError('Hemisphere outputs are missing from %s; inspect Slicer logs: %s'
                                    % (folder, logs))
-    shutil.rmtree(logs)
+    if not args.profile:
+        shutil.rmtree(logs)
     marker.write_text('Transforms completed for %d files.\n' % len(inputs))
     print('Transforms completed for %d files.' % len(inputs), flush=True)
 

@@ -256,6 +256,7 @@ Slicer with SlicerDMRI; use a working display or virtual display.
 | `-i` | Off | Invert the transform before applying it. |
 | `-j N` | `1` | Number of independent Slicer workers; a shared transform is batched across workers. |
 | `--split-output-directory DIR` | Off | Also write left, right and commissural subsets under this directory, using the same hardened polydata while retaining the complete transformed files in `outputDirectory`. |
+| `--profile` | Off | Retain each worker's stdout log and JSON phase timings in a `wma-harden-*` directory after a successful run. |
 | `-v` / `--version` | Version action | Print the program version and exit. |
 
 ```shell
@@ -266,19 +267,25 @@ python bin/wm_harden_transform.py \
 ```
 
 Output filenames match the inputs. Successful runs write
-`transform_complete.log`; failed worker logs remain for inspection. Existing
-transformed files are reused. With `--split-output-directory`, missing split
-files are repaired from an existing transformed file; all three split folders
-are checked before the completion marker is written. Omit the option to produce
-only the complete transformed files. Splitting requires existing hemisphere labels.
+`transform_complete.log`; failed worker logs remain for inspection. `--profile`
+also retains successful worker logs and JSON timings in
+`<outputDirectory>/wma-harden-*/worker_<index>.{log,json}`. Profiles report
+startup, imports, reads, transform loading, hardening, writes and splitting.
+Existing transformed files are reused. With `--split-output-directory`, missing
+split files are repaired from an existing transformed file; all three split
+folders are checked before the completion marker is written. Omit the option to
+produce only the complete transformed files. Splitting requires existing
+hemisphere labels.
 
 ### harden_transform_with_slicer.py
 
 [Source](../bin/harden_transform_with_slicer.py). **Internal Slicer Python
-helper** used by `wm_harden_transform.py`. It loads fiber bundles, hardens a
-transform, writes results and removes its temporary scene nodes. Run inside
-Slicer with SlicerDMRI, not ordinary Python. Prefer the wrapper above for normal
-batch use.
+helper** used by `wm_harden_transform.py`. Each worker reuses fiber-bundle,
+storage and display nodes, and reads through Slicer's storage node. With splitting
+enabled it writes complete VTP files with the lossless WMA writer, preserving
+`SPACE=RAS`, and splits from that in-memory data. Legacy VTK files and runs
+without splitting use Slicer's storage writer. Run inside Slicer with SlicerDMRI, not ordinary
+Python. Prefer the wrapper above for normal batch use.
 
 | Argument | Default / requirement | Meaning |
 | --- | --- | --- |
@@ -289,6 +296,7 @@ batch use.
 | `partition_index` | Optional positional, `0` | Zero-based partition index. |
 | `partition_count` | Optional positional, `1` | Total partitions; processes sorted files at `[partition_index::partition_count]`. |
 | `--split-output-directory DIR` | Off | Also write left, right and commissural subsets from the hardened polydata; create the three subdirectories first. |
+| `--profile-output JSON` | Off | Internal option used by the wrapper to write startup and phase timings to a worker JSON file. |
 | `-v` / `--version` | Version action | Print the program version and exit. |
 
 ```shell

@@ -117,11 +117,30 @@ step skips an additional full read and rewrite. Its work is included in the
 outlier-removal timing. The standalone assessment command remains available.
 
 The ORG shell pipeline now splits hemispheres inside each inverse-transform
-worker while the hardened polydata is still in memory. It retains the complete
+worker while the hardened polydata is still in memory. Each worker reuses its
+fiber-bundle, storage and display nodes across files; `vtkMRMLStorageNode.ReadData`
+preserves Slicer's input-reading semantics, and the native transform-hardening
+logic is unchanged. The worker removes those nodes when its batch finishes,
+strips inherited `PYTHONPATH`, limits BLAS/OpenMP/ITK and classic VTK threads to
+one, and disables unused CLI/scripted-loadable module discovery while retaining
+SlicerDMRI and the native transform modules.
+
+With hemisphere splitting enabled, a lossless WMA writer saves complete VTP
+files and the split outputs from the same in-memory polydata. Full VTP files
+retain `SPACE=RAS` metadata; LZ4 is the default compression and an
+explicit compression setting is honored. Without splitting, Slicer's storage
+writer continues to save the transformed file, as it does for legacy VTK files.
+Storage coordinate settings reset per file to match the GUI's RAS defaults.
+Hemisphere masks use the same
+selection algorithm as standalone separation. The pipeline retains the full
 transformed files and avoids reading them again for separation. The following
 separation command verifies the three output catalogues and repairs incomplete
-sets. Its timing is therefore verification time; the split work is included in
-the inverse-transform stage.
+sets. Its timing is therefore verification time; split work is included in the
+inverse-transform stage.
+
+Pass `--profile` to `wm_harden_transform.py` to retain each worker's stdout log
+and JSON timings in its `wma-harden-*` directory. The profile separates startup,
+imports, input reads, transform loading, hardening, writing and splitting.
 
 Small differences between the three full-run columns do not establish a backend
 regression: they also include process startup, filesystem cache state and shared
