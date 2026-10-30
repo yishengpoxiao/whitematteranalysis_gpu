@@ -603,7 +603,7 @@ def remove_cluster_outliers(subject_polydata, cluster_idx, cluster_count,
                 distances_subject, cluster_local_sigmasq)
             total_subject = numpy.sum(similarity_subject, axis=0) / n_atlas
         else:
-            atlas_pd = wma.io.read_polydata(filename)
+            atlas_pd = wma.io.read_polydata(filename, geometry_only=True)
             n_atlas = atlas_pd.GetNumberOfLines()
             if not n_atlas:
                 return c, indices, 0, 'empty'

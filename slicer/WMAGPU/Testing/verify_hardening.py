@@ -60,8 +60,8 @@ def fixture(labels, space):
     return data
 
 
-def run(module, source, transform, output, split=None):
-    argv = ['harden_transform_with_slicer.py', str(source), str(transform), '1', str(output)]
+def run(module, source, transform, output, split=None, inverse='1'):
+    argv = ['harden_transform_with_slicer.py', str(source), str(transform), inverse, str(output)]
     if split is not None:
         argv += ['--split-output-directory', str(split)]
     with patch.object(sys, 'argv', argv):
@@ -72,6 +72,38 @@ def same_directory(left, right, names):
     for name in names:
         assert_equal(unittest.TestCase(), wma.io.read_polydata(str(left / name)),
                      wma.io.read_polydata(str(right / name)))
+
+
+def save_nonlinear_transform(path):
+    image = vtk.vtkImageData()
+    image.SetDimensions(5, 5, 5)
+    image.SetOrigin(-10., -10., -10.)
+    image.SetSpacing(10., 10., 10.)
+    displacement = vtk.vtkFloatArray()
+    displacement.SetNumberOfComponents(3)
+    displacement.SetNumberOfTuples(5 * 5 * 5)
+    for z in range(5):
+        for y in range(5):
+            for x in range(5):
+                point = (x * 10. - 10., y * 10. - 10., z * 10. - 10.)
+                displacement.SetTuple3(x + 5 * (y + 5 * z),
+                    .01 * point[0] * point[1], .01 * point[1] * point[2],
+                    .01 * point[2] * point[0])
+    image.GetPointData().SetScalars(displacement)
+    grid = slicer.vtkOrientedGridTransform()
+    grid.SetDisplacementGridData(image)
+    grid.SetInterpolationModeToLinear()
+    samples = [(0., 0., 0.), (10., 10., 0.), (20., 20., 0.)]
+    displacements = [np.subtract(grid.TransformPoint(point), point) for point in samples]
+    assert not np.allclose(displacements[1] - displacements[0],
+                           displacements[2] - displacements[1])
+    node = slicer.mrmlScene.AddNewNodeByClass('vtkMRMLTransformNode')
+    node.SetAndObserveTransformToParent(grid)
+    assert slicer.util.saveNode(node, str(path))
+    storage = node.GetStorageNode()
+    slicer.mrmlScene.RemoveNode(node)
+    if storage is not None and storage.GetScene() == slicer.mrmlScene:
+        slicer.mrmlScene.RemoveNode(storage)
 
 
 def main():
@@ -155,6 +187,31 @@ def main():
         same_directory(old_warp, new_warp, names)
         current._remove_fiber_node(fiber)
         slicer.mrmlScene.RemoveNode(nonlinear)
+
+        nonlinear_path = root / 'nonlinear transform.h5'
+        save_nonlinear_transform(nonlinear_path)
+        for inverse in ('0', '1'):
+            for label, module in (('original nonlinear', original),
+                                  ('current nonlinear', current)):
+                run_name = '%s nonlinear inverse%s' % (label, inverse)
+                no_split = root / (run_name + ' no split')
+                no_split.mkdir()
+                run(module, source, nonlinear_path, no_split, inverse=inverse)
+                split = root / (run_name + ' split')
+                split.mkdir()
+                (split / 'hardened').mkdir()
+                for folder in ('tracts_left_hemisphere', 'tracts_right_hemisphere', 'tracts_commissural'):
+                    (split / folder).mkdir()
+                run(module, source, nonlinear_path, split / 'hardened', split, inverse=inverse)
+                assert sorted(path.name for path in (split / 'hardened').iterdir()) == names
+                if label == 'original nonlinear':
+                    expected_nonlinear_no_split = no_split
+                    expected_nonlinear_split = split
+                else:
+                    same_directory(expected_nonlinear_no_split, no_split, names)
+                    same_directory(expected_nonlinear_split / 'hardened', split / 'hardened', names)
+                    for folder in ('tracts_left_hemisphere', 'tracts_right_hemisphere', 'tracts_commissural'):
+                        same_directory(expected_nonlinear_split / folder, split / folder, names)
 
         after = {node.GetID() for node in slicer.util.getNodesByClass('vtkMRMLNode')}
         assert after == before, (before, after)

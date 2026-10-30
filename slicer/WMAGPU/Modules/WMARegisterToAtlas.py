@@ -181,7 +181,7 @@ class WMARegisterToAtlasWidget(ScriptedLoadableModuleWidget):
             if use_atlas:
                 target = _CORE.find_registration_atlas(self.atlasDirectory)
                 common.status(self, 'Registration target: %s' % target, 5)
-                fixed_pd = wma.io.read_polydata(target)
+                fixed_pd = wma.io.read_polydata(target, geometry_only=True)
                 target_name = 'atlas'
             else:
                 fixed_pd = common.world_polydata(fixed)

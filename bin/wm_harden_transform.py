@@ -35,8 +35,8 @@ def _build_arg_parser():
 
 def _run_slicer(polydata, transform, inverse, slicer_path, helper, outdir, partition,
                 partitions, log, split_output_dir=None, profile_output=None):
-    command = [str(slicer_path), '--no-main-window', '--disable-cli-modules',
-               '--disable-scripted-loadable-modules', '--python-script', helper,
+    command = [str(slicer_path), '--no-main-window', '--disable-modules',
+               '--python-script', helper,
                str(polydata), str(transform), str(int(inverse)), str(outdir),
                str(partition), str(partitions)]
     if split_output_dir is not None:

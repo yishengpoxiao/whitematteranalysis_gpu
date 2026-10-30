@@ -121,9 +121,11 @@ worker while the hardened polydata is still in memory. Each worker reuses its
 fiber-bundle, storage and display nodes across files; `vtkMRMLStorageNode.ReadData`
 preserves Slicer's input-reading semantics, and the native transform-hardening
 logic is unchanged. The worker removes those nodes when its batch finishes,
-strips inherited `PYTHONPATH`, limits BLAS/OpenMP/ITK and classic VTK threads to
-one, and disables unused CLI/scripted-loadable module discovery while retaining
-SlicerDMRI and the native transform modules.
+strips inherited `PYTHONPATH` and limits BLAS/OpenMP/ITK and classic VTK threads
+to one. Batch processes disable GUI module discovery and import only the native
+SlicerDMRI fiber-bundle and transform logic from Slicer's registered module paths.
+Transforms load through the same native MRML storage reader, including nonlinear
+HDF5 transforms. No Slicer version or installation path is hardcoded.
 
 With hemisphere splitting enabled, a lossless WMA writer saves complete VTP
 files and the split outputs from the same in-memory polydata. Full VTP files
@@ -140,7 +142,8 @@ inverse-transform stage.
 
 Pass `--profile` to `wm_harden_transform.py` to retain each worker's stdout log
 and JSON timings in its `wma-harden-*` directory. The profile separates startup,
-imports, input reads, transform loading, hardening, writing and splitting.
+native module preparation, imports, input reads, transform loading, hardening,
+writing and splitting.
 
 Small differences between the three full-run columns do not establish a backend
 regression: they also include process startup, filesystem cache state and shared

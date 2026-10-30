@@ -32,7 +32,7 @@ class HardenWorkerTests(unittest.TestCase):
                 command = run.call_args.args[0]
                 env = run.call_args.kwargs['env']
                 self.assertEqual(list(map(str, command)), [str(slicer), '--no-main-window',
-                    '--disable-cli-modules', '--disable-scripted-loadable-modules',
+                    '--disable-modules',
                     '--python-script', str(helper), str(command_paths[0]), str(command_paths[1]),
                     '1', str(outdir), '2', '4', '--split-output-directory', str(split),
                     '--profile-output', str(profile), '--python-code', 'slicer.app.quit()'])

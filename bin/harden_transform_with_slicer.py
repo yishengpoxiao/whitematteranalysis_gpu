@@ -46,6 +46,32 @@ def _prepare_split_modules():
     return _WMA, _SEPARATION
 
 
+def _prepare_native_modules():
+    # The launcher skips GUI module discovery. Use the paths supplied by Slicer
+    # and its installed extensions rather than version/platform-specific paths.
+    for path in slicer.app.moduleManager().factoryManager().searchPaths:
+        if path not in sys.path:
+            sys.path.append(path)
+    from vtkSlicerTractographyDisplayModuleLogicPython import vtkSlicerFiberBundleLogic
+    from vtkSlicerTransformsModuleLogicPython import vtkSlicerTransformLogic
+    fiber_logic = vtkSlicerFiberBundleLogic()
+    fiber_logic.SetMRMLScene(slicer.mrmlScene)
+    return fiber_logic, vtkSlicerTransformLogic()
+
+
+def _load_transform(filename):
+    # Use the same MRML storage reader without constructing the GUI I/O module.
+    node = slicer.mrmlScene.AddNewNodeByClass('vtkMRMLTransformNode')
+    storage = slicer.mrmlScene.AddNewNodeByClass('vtkMRMLTransformStorageNode')
+    node.SetAndObserveStorageNodeID(storage.GetID())
+    storage.SetFileName(filename)
+    if not storage.ReadData(node):
+        slicer.mrmlScene.RemoveNode(node)
+        slicer.mrmlScene.RemoveNode(storage)
+        raise RuntimeError('Could not load transform file: ' + filename)
+    return node
+
+
 def split_polydata(polydata, polydata_path, split_output_dir):
     _, separation = _prepare_split_modules()
     found, labels = separation.read_mask_location_from_vtk(polydata)
@@ -164,6 +190,7 @@ def main():
     # Each process handles independent files; avoid nested native thread pools.
     vtk.vtkMultiThreader.SetGlobalMaximumNumberOfThreads(1)
     vtk.vtkMultiThreader.SetGlobalDefaultNumberOfThreads(1)
+    fiber_logic, logic = _timed('native_modules', _prepare_native_modules)
     if args.split_output_directory is not None:
         _timed('imports', _prepare_split_modules)
 
@@ -181,10 +208,7 @@ def main():
     input_polydatas = input_polydatas[args.partition_index::args.partition_count]
     _FILE_COUNT = len(input_polydatas)
 
-    check_load, transform_node = _timed('transform_load', slicer.util.loadTransform,
-                                      str(args.transform), 1)
-    if not check_load:
-        raise RuntimeError('Could not load transform file: ' + args.transform)
+    transform_node = _timed('transform_load', _load_transform, str(args.transform))
     slicer.mrmlScene.StartState(slicer.mrmlScene.BatchProcessState)
     fiber_node = slicer.mrmlScene.AddNewNodeByClass('vtkMRMLFiberBundleNode')
     storage_node = fiber_node.CreateDefaultStorageNode()
@@ -193,7 +217,6 @@ def main():
     try:
         if args.inverse == '1':
             transform_node.Inverse()
-        logic = slicer.vtkSlicerTransformLogic()
         for polydata in input_polydatas:
             harden_transform(polydata, transform_node, logic, fiber_node, storage_node,
                              args.outdir, args.split_output_directory)

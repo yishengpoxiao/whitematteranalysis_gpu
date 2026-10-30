@@ -270,7 +270,9 @@ Output filenames match the inputs. Successful runs write
 `transform_complete.log`; failed worker logs remain for inspection. `--profile`
 also retains successful worker logs and JSON timings in
 `<outputDirectory>/wma-harden-*/worker_<index>.{log,json}`. Profiles report
-startup, imports, reads, transform loading, hardening, writes and splitting.
+startup, native module preparation, imports, reads, transform loading, hardening,
+writes and splitting. Workers skip GUI module discovery and load the required
+SlicerDMRI/transform bindings from Slicer's registered module paths.
 Existing transformed files are reused. With `--split-output-directory`, missing
 split files are repaired from an existing transformed file; all three split
 folders are checked before the completion marker is written. Omit the option to

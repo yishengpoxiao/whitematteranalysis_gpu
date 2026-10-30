@@ -208,7 +208,7 @@ class WMAPipelineWidget(ScriptedLoadableModuleWidget):
                     raise ValueError('Enable saving and select an output directory for intermediate outputs.')
                 reg_atlas = _CORE.find_registration_atlas(self.atlasDirectory)
                 common.status(self, "Registration target: %s" % reg_atlas, 3)
-                atlas_pd = wma.io.read_polydata(reg_atlas)
+                atlas_pd = wma.io.read_polydata(reg_atlas, geometry_only=True)
                 reg = _CORE.register_subject_to_atlas(
                     polydata, atlas_pd, fiber_length_mm=fiber_length,
                     backend=backend,
