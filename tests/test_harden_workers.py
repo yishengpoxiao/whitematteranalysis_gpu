@@ -67,7 +67,7 @@ class HardenWorkerTests(unittest.TestCase):
 
             def fake_worker(polydata, transform, inverse, slicer_path, helper, outdir,
                             partition, partitions, log, split_output_dir=None,
-                            profile_output=None):
+                            profile_output=None, input_status=None):
                 names = sorted(path.name for path in source.glob('*.vtp'))[partition::partitions]
                 for name in names:
                     (outdir / name).write_bytes(b'hardened')

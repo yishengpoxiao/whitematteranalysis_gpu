@@ -38,7 +38,7 @@ _geometry_readers = local()
 
 def _prefetch_file(filename):
     """Queue large-file cache misses before VTK's synchronous array reads."""
-    if not hasattr(os, 'posix_fadvise') or os.environ.get('WMA_IO_PREFETCH') == '0':
+    if os.environ.get('WMA_IO_PREFETCH') != '1' or not hasattr(os, 'posix_fadvise'):
         return
     try:
         size = os.path.getsize(filename)
@@ -63,8 +63,8 @@ def read_polydata(filename, progress_callback=None, geometry_only=False):
     XML geometry reads reuse a reader per thread and skip point/cell arrays.
     Returned geometry remains independent of later reads. Legacy VTK
     attributes are discarded after reading; default reads retain attributes.
-    Large full-attribute reads receive best-effort OS readahead where supported. Set
-    WMA_IO_PREFETCH=0 to disable it.
+    Set WMA_IO_PREFETCH=1 to request best-effort OS readahead for large
+    full-attribute reads; it is disabled by default.
     """
 
     if VERBOSE:

@@ -257,6 +257,8 @@ Slicer with SlicerDMRI; use a working display or virtual display.
 | `-j N` | `1` | Number of independent Slicer workers; a shared transform is batched across workers. |
 | `--split-output-directory DIR` | Off | Also write left, right and commissural subsets under this directory, using the same hardened polydata while retaining the complete transformed files in `outputDirectory`. |
 | `--profile` | Off | Retain each worker's stdout log and JSON phase timings in a `wma-harden-*` directory after a successful run. |
+| `--input-catalogue DIR` | Off | Expected VTK/VTP filenames for inputs that a preparation command will create. Required with `--prepare-command`. |
+| `--prepare-command COMMAND ...` | Off | Start Slicer workers while this command prepares inputs. Place last; workers wait for a successful exit and an exact filename match. |
 | `-v` / `--version` | Version action | Print the program version and exit. |
 
 ```shell
@@ -279,6 +281,12 @@ folders are checked before the completion marker is written. Omit the option to
 produce only the complete transformed files. Splitting requires existing
 hemisphere labels.
 
+The rigid ORG pipeline uses preparation mode to overlap Slicer initialization
+with outlier removal. Workers wait before listing or reading inputs. Preparation
+failure or interruption releases and reaps waiting workers; no transform
+completion marker is written. With `--profile`, `preparation.json` records the
+preparation and combined wall times; worker profiles include `input_wait`.
+
 ### harden_transform_with_slicer.py
 
 [Source](../bin/harden_transform_with_slicer.py). **Internal Slicer Python
@@ -299,6 +307,7 @@ Python. Prefer the wrapper above for normal batch use.
 | `partition_count` | Optional positional, `1` | Total partitions; processes sorted files at `[partition_index::partition_count]`. |
 | `--split-output-directory DIR` | Off | Also write left, right and commissural subsets from the hardened polydata; create the three subdirectories first. |
 | `--profile-output JSON` | Off | Internal option used by the wrapper to write startup and phase timings to a worker JSON file. |
+| `--input-status FILE` | Off | Internal readiness gate supplied by the wrapper; do not create this file manually. |
 | `-v` / `--version` | Version action | Print the program version and exit. |
 
 ```shell

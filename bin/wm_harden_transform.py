@@ -2,9 +2,13 @@
 # -*- coding: utf-8 -*-
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
+from functools import partial
+import json
 import os
 from pathlib import Path
 import shutil
+import signal
 import subprocess
 import tempfile
 import time
@@ -30,11 +34,15 @@ def _build_arg_parser():
                         help='Also write hemisphere subsets from each hardened file.')
     parser.add_argument('--profile', action='store_true',
                         help='Keep worker logs and JSON timings after successful processing.')
+    parser.add_argument('--input-catalogue',
+                        help='Directory listing expected input filenames before preparation.')
+    parser.add_argument('--prepare-command', nargs=argparse.REMAINDER,
+                        help='Prepare inputs while Slicer starts; place this command last.')
     return parser
 
 
 def _run_slicer(polydata, transform, inverse, slicer_path, helper, outdir, partition,
-                partitions, log, split_output_dir=None, profile_output=None):
+                partitions, log, split_output_dir=None, profile_output=None, input_status=None):
     command = [str(slicer_path), '--no-main-window', '--disable-modules',
                '--python-script', helper,
                str(polydata), str(transform), str(int(inverse)), str(outdir),
@@ -43,6 +51,8 @@ def _run_slicer(polydata, transform, inverse, slicer_path, helper, outdir, parti
         command.extend(['--split-output-directory', str(split_output_dir)])
     if profile_output is not None:
         command.extend(['--profile-output', str(profile_output)])
+    if input_status is not None:
+        command.extend(['--input-status', str(input_status)])
     command.extend(['--python-code', 'slicer.app.quit()'])
     environment = os.environ.copy()
     environment.pop('PYTHONPATH', None)
@@ -58,6 +68,41 @@ def _run_slicer(polydata, transform, inverse, slicer_path, helper, outdir, parti
                        env=environment)
 
 
+def _publish_status(path, value):
+    temporary = path.with_suffix('.tmp')
+    temporary.write_text(value)
+    temporary.replace(path)
+
+
+def _cancel_preparation(signum, frame):
+    raise SystemExit(128 + signum)
+
+
+def _run_prepared(runs, workers, command, status, inputdir, expected):
+    previous = signal.signal(signal.SIGTERM, _cancel_preparation)
+    released = False
+    try:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            try:
+                futures = [pool.submit(run) for run in runs]
+                started = time.perf_counter()
+                subprocess.run(command, check=True)
+                prepare_seconds = time.perf_counter() - started
+                actual = {Path(path).name for path in wma.io.list_vtk_files(str(inputdir))}
+                if actual != expected:
+                    raise RuntimeError('Prepared input filenames do not match the catalogue.')
+                _publish_status(status, 'ready')
+                released = True
+            finally:
+                if not released:
+                    _publish_status(status, 'failed')
+            for future in futures:
+                future.result()
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+    return prepare_seconds
+
+
 def main():
     parser = _build_arg_parser()
     args = parser.parse_args()
@@ -65,7 +110,12 @@ def main():
     inputdir, outdir, slicer_path = inputdir.resolve(), outdir.resolve(), slicer_path.resolve()
     split_output_dir = (Path(args.split_output_directory).resolve()
                         if args.split_output_directory else None)
-    if not inputdir.is_dir():
+    if bool(args.input_catalogue) != bool(args.prepare_command):
+        parser.error('--input-catalogue and --prepare-command must be used together.')
+    catalogue = Path(args.input_catalogue).resolve() if args.input_catalogue else inputdir
+    if not catalogue.is_dir():
+        parser.error('Input catalogue does not exist: ' + str(catalogue))
+    if not args.prepare_command and not inputdir.is_dir():
         parser.error('Input directory does not exist: ' + str(inputdir))
     if not slicer_path.is_file():
         parser.error('Slicer executable does not exist: ' + str(slicer_path))
@@ -73,7 +123,9 @@ def main():
     if split_output_dir is not None:
         for folder in ('tracts_left_hemisphere', 'tracts_right_hemisphere', 'tracts_commissural'):
             (split_output_dir / folder).mkdir(parents=True, exist_ok=True)
-    inputs = wma.io.list_vtk_files(str(inputdir))
+    inputs = [str(inputdir / Path(path).name) for path in wma.io.list_vtk_files(str(catalogue))]
+    if args.prepare_command and not inputs:
+        parser.error('The preparation catalogue must contain input VTK/VTP files.')
     workers = min(effective_n_jobs(args.numberOfJobs), max(1, len(inputs)))
     helper = str(Path(__file__).resolve().with_name('harden_transform_with_slicer.py'))
     if args.transform_folder:
@@ -97,12 +149,21 @@ def main():
         marker.unlink()
     logs = Path(tempfile.mkdtemp(prefix='wma-harden-', dir=str(outdir)))
     print('Slicer worker logs: ' + str(logs), flush=True)
-    Parallel(n_jobs=workers, prefer='threads')(
-        delayed(_run_slicer)(polydata, transform, args.inverse_transform, slicer_path, helper,
+    status = logs / 'input.status' if args.prepare_command else None
+    runs = [partial(_run_slicer, polydata, transform, args.inverse_transform, slicer_path, helper,
             outdir, index, count, logs/('worker_%04d.log' % task), split_output_dir,
-            logs/('worker_%04d.json' % task) if args.profile else None)
-        for task, (polydata, transform, index, count) in enumerate(tasks))
+            logs/('worker_%04d.json' % task) if args.profile else None, status)
+        for task, (polydata, transform, index, count) in enumerate(tasks)]
     expected = {Path(path).name for path in inputs}
+    started = time.perf_counter()
+    if args.prepare_command:
+        prepare_seconds = _run_prepared(runs, workers, args.prepare_command, status, inputdir, expected)
+        if args.profile:
+            (logs / 'preparation.json').write_text(json.dumps({
+                'prepare_s': prepare_seconds, 'combined_s': time.perf_counter() - started,
+                'command': args.prepare_command}, indent=2) + '\n')
+    else:
+        Parallel(n_jobs=workers, prefer='threads')(delayed(run)() for run in runs)
     actual = {Path(path).name for path in wma.io.list_vtk_files(str(outdir))}
     if not expected.issubset(actual):
         raise RuntimeError('Transformed files are missing; inspect Slicer logs: ' + str(logs))

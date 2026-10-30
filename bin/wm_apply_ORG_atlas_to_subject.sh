@@ -319,9 +319,27 @@ fi
 echo "<wm_apply_ORG_atlas_to_subject> Outlier fiber removal."
 FiberClusteringOutlierRemFolder=$OutputCaseFolder/FiberClustering/OutlierRemovedClusters
 if ! all_clusters_present "$FiberClusteringOutlierRemFolder/${FCcaseID}_outlier_removed"; then
-	WMA_VTP_COMPRESSION="${WMA_VTP_COMPRESSION:-lz4}" wm_cluster_remove_outliers.py -gpu "$GPUMode" -j $NumThreads \
-		--hemisphere-location-file "$FCAtlasFolder/cluster_hemisphere_location.txt" \
-		$FiberClusteringInitialFolder/$FCcaseID $FCAtlasFolder $FiberClusteringOutlierRemFolder || exit 1
+	outlier_command=(wm_cluster_remove_outliers.py -gpu "$GPUMode" -j "$NumThreads"
+		--hemisphere-location-file "$FCAtlasFolder/cluster_hemisphere_location.txt"
+		"$FiberClusteringInitialFolder/$FCcaseID" "$FCAtlasFolder" "$FiberClusteringOutlierRemFolder")
+	prepared_output="$OutputCaseFolder/FiberClustering/TransformedClusters/${caseID}"
+	if [ "$RegMode" == "rig" ] && { [ ! -f "$prepared_output/transform_complete.log" ] || \
+		! all_clusters_present "$prepared_output"; }; then
+		# Initialize Slicer while outliers are computed. Workers wait for the
+		# producer to exit successfully before enumerating or reading its files.
+		harden_command=(wm_harden_transform.py -j "$NumThreads" -i
+			-t "$RegistrationFolder/${caseID}/output_tractography/itk_txform_${caseID}.tfm"
+			"$FiberClusteringOutlierRemFolder/${FCcaseID}_outlier_removed" "$prepared_output" "$SlicerPath"
+			--split-output-directory "$OutputCaseFolder/FiberClustering/SeparatedClusters"
+			--input-catalogue "$FiberClusteringInitialFolder/$FCcaseID"
+			--prepare-command "${outlier_command[@]}")
+		if [ "$VX" == 1 ]; then
+			harden_command=(xvfb-run -a "${harden_command[@]}")
+		fi
+		WMA_VTP_COMPRESSION="${WMA_VTP_COMPRESSION:-lz4}" "${harden_command[@]}" || exit 1
+	else
+		WMA_VTP_COMPRESSION="${WMA_VTP_COMPRESSION:-lz4}" "${outlier_command[@]}" || exit 1
+	fi
 else
 	echo " - outlier fiber removal has been done."
 fi

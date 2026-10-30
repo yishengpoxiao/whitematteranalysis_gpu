@@ -72,6 +72,14 @@ def _load_transform(filename):
     return node
 
 
+def _wait_for_input(status):
+    # The producer publishes atomically after it has closed every input file.
+    while not os.path.isfile(status):
+        time.sleep(.05)
+    if Path(status).read_text() != 'ready':
+        raise RuntimeError('Input preparation failed; no files were processed.')
+
+
 def split_polydata(polydata, polydata_path, split_output_dir):
     _, separation = _prepare_split_modules()
     found, labels = separation.read_mask_location_from_vtk(polydata)
@@ -173,6 +181,7 @@ def _build_arg_parser():
     parser.add_argument('partition_count', type=int, nargs='?', default=1)
     parser.add_argument('--split-output-directory', default=None)
     parser.add_argument('--profile-output', default=None)
+    parser.add_argument('--input-status', default=None)
 
     return parser
 
@@ -193,6 +202,8 @@ def main():
     fiber_logic, logic = _timed('native_modules', _prepare_native_modules)
     if args.split_output_directory is not None:
         _timed('imports', _prepare_split_modules)
+    if args.input_status is not None:
+        _timed('input_wait', _wait_for_input, args.input_status)
 
     if os.path.isfile(args.polydata):
         input_polydatas = [args.polydata]

@@ -112,6 +112,14 @@ class GeometryReaderTests(unittest.TestCase):
 
     def test_prefetch_skips_small_or_disabled_files(self):
         advice = Mock()
+        getsize = Mock(return_value=64 * 1024 * 1024)
+        with patch.dict(os.environ, {}, clear=True), \
+             patch.object(wma.io.os, 'posix_fadvise', advice, create=True), \
+             patch.object(wma.io.os.path, 'getsize', getsize):
+            wma.io._prefetch_file('default.vtk')
+        getsize.assert_not_called()
+        advice.assert_not_called()
+
         with patch.dict(os.environ, {'WMA_IO_PREFETCH': '1'}), \
              patch.object(wma.io.os, 'posix_fadvise', advice, create=True), \
              patch.object(wma.io.os.path, 'getsize', return_value=64 * 1024 * 1024 - 1):

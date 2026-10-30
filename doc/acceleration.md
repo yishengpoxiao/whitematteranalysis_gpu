@@ -62,6 +62,11 @@ Source: [CPU labeling](../whitematteranalysis/gpu/cpu_backend.py),
 [cluster output](../whitematteranalysis/cluster.py),
 [VTK I/O](../whitematteranalysis/io.py).
 
+Whole-file synchronous readahead is disabled by default. Controlled reads of a
+private cold C028 copy found that its advice sweep cost more time than it saved.
+Set `WMA_IO_PREFETCH=1` to opt in on storage where it helps; normal VTK reads
+preserve the same geometry and attributes either way.
+
 On Linux, geometry preparation and GPU host-output buffers temporarily disable
 NumPy's huge-page allocation advice to avoid kernel compaction stalls on
 fragmented memory. Overlapping geometry calls share the scope, and the previous
@@ -131,6 +136,12 @@ SlicerDMRI fiber-bundle and transform logic from Slicer's registered module path
 Transforms load through the same native MRML storage reader, including nonlinear
 HDF5 transforms. No Slicer version or installation path is hardcoded.
 
+For a fresh rigid ORG run, Slicer initialization now overlaps outlier removal.
+Workers wait before enumerating inputs; the parent releases them atomically only
+after the producer succeeds and its filenames match the initial catalogue.
+Preparation failure or interruption releases waiting workers without writing a
+transform completion marker. No startup work is moved outside the pipeline clock.
+
 With hemisphere splitting enabled, a lossless WMA writer saves complete VTP
 files and the split outputs from the same in-memory polydata. Full VTP files
 retain `SPACE=RAS` metadata; LZ4 is the default compression and an
@@ -146,8 +157,9 @@ inverse-transform stage.
 
 Pass `--profile` to `wm_harden_transform.py` to retain each worker's stdout log
 and JSON timings in its `wma-harden-*` directory. The profile separates startup,
-native module preparation, imports, input reads, transform loading, hardening,
-writing and splitting.
+native module preparation, imports, input waiting, reads, transform loading,
+hardening, writing and splitting. `preparation.json` records preparation and
+combined wall time; overlapping intervals must not be added twice.
 
 Small differences between the three full-run columns do not establish a backend
 regression: they also include process startup, filesystem cache state and shared
