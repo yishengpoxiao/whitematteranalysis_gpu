@@ -62,10 +62,22 @@ Source: [CPU labeling](../whitematteranalysis/gpu/cpu_backend.py),
 [cluster output](../whitematteranalysis/cluster.py),
 [VTK I/O](../whitematteranalysis/io.py).
 
-Whole-file synchronous readahead is disabled by default. Controlled reads of a
-private cold C028 copy found that its advice sweep cost more time than it saved.
-Set `WMA_IO_PREFETCH=1` to opt in on storage where it helps; normal VTK reads
-preserve the same geometry and attributes either way.
+Whole-file synchronous readahead is disabled by default. Two balanced pairs of
+private cold C028 reads were about 3–5 seconds slower with its advice sweep.
+However, a subsequent complete cold-data pipeline pair read the input in
+15.6 seconds with readahead and 20.0 seconds without it. Storage conditions vary;
+set `WMA_IO_PREFETCH=1` to opt in where it helps. Normal VTK reads preserve the
+same geometry and attributes either way.
+
+The four latest complete runs also included one 34.0-second CPU input read:
+only 3.7 seconds were process CPU time, with 5.9 MB of storage-attributed reads
+against a 3.6 GB payload. These counters do not identify the remaining wait.
+That event had no concurrent kernel/scheduler trace, so its cause remains
+unresolved. The README includes the observed wait in the reported total.
+The separate cold-data pair repeatedly sampled blocked page/block-layer waits
+(`wait_on_page_bit_common`, `blk_mq_get_tag`) with negligible runqueue delay.
+This supports an I/O/page-wait explanation for those cold reads, while leaving
+the exact storage or kernel cause open.
 
 On Linux, geometry preparation and GPU host-output buffers temporarily disable
 NumPy's huge-page allocation advice to avoid kernel compaction stalls on

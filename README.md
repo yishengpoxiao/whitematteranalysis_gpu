@@ -6,7 +6,7 @@ This fork adds CUDA GPU acceleration, a vectorized CPU backend, and a five-modul
 
 ## Full-pipeline performance
 
-On **2026-10-30**, source revision `4107d9b` processed C028 (approximately
+On **2026-10-30**, source revision `a020e6b` processed C028 (approximately
 **330,000 streamlines, 3.6 GB**) using `wm_apply_ORG_atlas_to_subject.sh`,
 ORG-800FC-100HCP and ORG-RegAtlas-100HCP. All modes used four physical CPU cores,
 `-n 4 -r rig -x 1 -c 0`, seed 1000 and float64. Hardware: Intel Xeon Gold 6330
@@ -14,30 +14,36 @@ and one RTX 4090 (**GPU 0**); Python 3.8, PyTorch 2.4.1/CUDA 12.1,
 Slicer 5.2.2 + SlicerDMRI under Xvfb. CUDA 12.1 describes this test environment,
 not a requirement.
 
-| Step | Joblib (4 workers), s | CPU matrix, s | CPU speedup | GPU, s | GPU speedup |
+| Step | Joblib (4 workers), s | CPU matrix, s | CPU speedup | GPU first run, s | GPU speedup |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Registration (rigid + affine) | 423.9 | 77.7 | 5.45x | 36.3 | 11.69x |
-| Atlas labeling and cluster saving | 892.6 | 97.9 | 9.11x | 27.9 | 32.04x |
-| Outlier removal + hemisphere assessment | 202.7 | 87.7 | 2.31x | 28.1 | 7.20x |
-| Inverse transform + hemisphere separation | 16.0 | 20.5 | 0.78x | 25.1 | 0.64x |
-| Separation verification | 0.4 | 0.4 | 0.99x | 0.4 | 0.95x |
-| Anatomical tract assembly | 15.7 | 15.0 | 1.04x | 15.2 | 1.03x |
-| **Total** | **1553.2** | **301.0** | **5.16x** | **136.0** | **11.42x** |
+| Registration (rigid + affine) | 371.6 | 83.0 | 4.48x | 28.9 | 12.84x |
+| Atlas labeling and cluster saving | 897.4 | 94.4 | 9.51x | 24.7 | 36.30x |
+| Outlier removal + hemisphere assessment | 209.5 | 82.4 | 2.54x | 28.1 | 7.46x |
+| Inverse transform + hemisphere separation* | 13.9 | 13.9 | 1.00x | 14.9 | 0.93x |
+| Separation verification | 0.4 | 0.4 | 1.04x | 0.4 | 1.04x |
+| Anatomical tract assembly | 15.2 | 15.0 | 1.02x | 14.9 | 1.02x |
+| **Total** | **1509.3** | **290.1** | **5.20x** | **113.8** | **13.26x** |
 
-Totals: **25.89 min** (joblib), **5.02 min** (CPU matrix), **2.27 min** (GPU).
+Totals: **25.15 min** (joblib), **4.84 min** (CPU matrix), **1.90 min** (GPU).
 Speedups compare the original per-fiber joblib backend within the current
-pipeline; shared I/O improvements apply to all modes. Complete runs used fresh
-outputs and empty atlas caches, four WMA workers and one BLAS/OpenMP thread.
-The GPU column uses the repeated complete run; the first GPU run took **182.8 s**.
-Slicer workers now initialize only native fiber-bundle/transform logic, preserving
-tensor handling. Startup still ranged from **1.9 to 13.5 s**, and inverse
-transform/separation from **16.0 to 31.9 s** across the four runs. Original input
-reads ranged from **2.6 to 42.5 s**; filesystem caches and shared workstation load
-were not reset. Totals include these waits; worker and I/O profiles were retained.
+pipeline; shared I/O improvements apply to all modes. Run order was GPU, joblib,
+CPU matrix, GPU repeat, with fresh outputs/atlas caches, four WMA workers and one
+BLAS/OpenMP thread. The GPU repeat took **111.3 s** (2.5 s below the first run).
+Filesystem, Slicer library and shared Triton compilation caches were not reset.
+Original input reads ranged from **2.4 to 34.0 s**; the CPU read outlier remains
+under investigation. Totals include all waits and pipeline overhead.
+
+\* Slicer initialization overlaps outlier removal; this row reports the
+**additional wall time outside outlier preparation**, avoiding double counting.
 Hemisphere assessment runs during outlier writing, and splitting runs inside
-inverse-transform workers; the next step verifies the split outputs. These final
-stages use the same CPU/Slicer code in every backend, so their timing differences
-reflect startup, I/O and scheduling rather than different GPU algorithms.
+inverse-transform workers. These final stages use the same CPU/Slicer code in
+all modes.
+
+An additional pair used private C028/atlas copies with file data pages evicted
+and empty atlas/Triton caches: the previous version took **158.7 s**, the new
+version **155.1 s**. Raw input reads were **15.6 / 20.0 s**, respectively, so
+this pair shows only a modest total improvement, not faster cold reads. Device,
+metadata and Slicer library caches were not reset; this is not a reboot test.
 
 All modes produced 800 initial, outlier-removed and transformed clusters plus
 74 anatomical tracts (245,946 initial fibers, 130,737 retained, 93,766 anatomical).
@@ -45,13 +51,13 @@ Validation covered all **4,874 VTPs**, the full registered tractogram and
 **11 transforms**:
 
 - **CPU matrix:** byte-identical VTP/VTK outputs and exact transform parameters.
-- **GPU (both complete runs):** identical membership, connectivity and attributes;
+- **GPU (including cold-data runs):** identical membership, connectivity and attributes;
   maximum coordinate difference **1.91e-6 mm**, maximum transform-parameter
   difference **3.30e-13**.
   All passed coordinate tolerances `rtol=1e-6, atol=1e-5` and transform tolerances
   `rtol=1e-10, atol=1e-10`.
 - The new joblib VTP/VTK outputs and transform files are byte-identical to the
-  previously validated `28ba96a` baseline.
+  previously validated baseline.
 
 See the [acceleration overview](doc/acceleration.md) for implementation and
 numerical validation details.
@@ -119,6 +125,7 @@ Outlier removal shares cached atlas reference statistics across subjects.
 | `WMA_CPU_THREADS=4` | Set the accelerated CPU worker budget; otherwise use an affinity-aware default |
 | `WMA_CPU_BLAS_THREADS=0` | Disable automatic atlas-labeling BLAS caps; a positive value sets a ceiling |
 | `WMA_VTP_COMPRESSION=lz4` | Select faster lossless VTP writing; library/Slicer defaults use compact zlib |
+| `WMA_IO_PREFETCH=1` | Opt into whole-file POSIX readahead; default off, benefit depends on storage |
 
 ## 3D Slicer extension
 
