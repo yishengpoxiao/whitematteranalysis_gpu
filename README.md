@@ -6,7 +6,7 @@ This fork adds CUDA GPU acceleration, a vectorized CPU backend, and a five-modul
 
 ## Full-pipeline performance
 
-On **2026-10-30**, source revision `28ba96a` processed C028 (approximately
+On **2026-10-30**, source revision `4107d9b` processed C028 (approximately
 **330,000 streamlines, 3.6 GB**) using `wm_apply_ORG_atlas_to_subject.sh`,
 ORG-800FC-100HCP and ORG-RegAtlas-100HCP. All modes used four physical CPU cores,
 `-n 4 -r rig -x 1 -c 0`, seed 1000 and float64. Hardware: Intel Xeon Gold 6330
@@ -16,28 +16,28 @@ not a requirement.
 
 | Step | Joblib (4 workers), s | CPU matrix, s | CPU speedup | GPU, s | GPU speedup |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Registration (rigid + affine) | 374.1 | 88.0 | 4.25x | 50.1 | 7.47x |
-| Atlas labeling and cluster saving | 1019.9 | 94.3 | 10.82x | 26.8 | 38.10x |
-| Outlier removal + hemisphere assessment | 207.1 | 81.9 | 2.53x | 26.3 | 7.88x |
-| Inverse transform + hemisphere separation | 24.4 | 22.8 | 1.07x | 28.6 | 0.85x |
-| Separation verification | 0.4 | 0.4 | 0.99x | 0.4 | 1.00x |
-| Anatomical tract assembly | 15.9 | 15.0 | 1.06x | 15.0 | 1.06x |
-| **Total** | **1643.5** | **303.9** | **5.41x** | **150.2** | **10.94x** |
+| Registration (rigid + affine) | 423.9 | 77.7 | 5.45x | 36.3 | 11.69x |
+| Atlas labeling and cluster saving | 892.6 | 97.9 | 9.11x | 27.9 | 32.04x |
+| Outlier removal + hemisphere assessment | 202.7 | 87.7 | 2.31x | 28.1 | 7.20x |
+| Inverse transform + hemisphere separation | 16.0 | 20.5 | 0.78x | 25.1 | 0.64x |
+| Separation verification | 0.4 | 0.4 | 0.99x | 0.4 | 0.95x |
+| Anatomical tract assembly | 15.7 | 15.0 | 1.04x | 15.2 | 1.03x |
+| **Total** | **1553.2** | **301.0** | **5.16x** | **136.0** | **11.42x** |
 
-Totals: **27.39 min** (joblib), **5.06 min** (CPU matrix), **2.50 min** (GPU).
+Totals: **25.89 min** (joblib), **5.02 min** (CPU matrix), **2.27 min** (GPU).
 Speedups compare the original per-fiber joblib backend within the current
 pipeline; shared I/O improvements apply to all modes. Complete runs used fresh
 outputs and empty atlas caches, four WMA workers and one BLAS/OpenMP thread.
-The GPU column is a complete rerun; the first complete GPU run took **182.2 s**.
-Inverse transform/separation took **22.8–28.6 s** across all four complete runs,
-versus 36.0–77.8 s previously. Worker startup still varied from 6.1 to 14.3 s.
-Worker profiles were retained. Totals include I/O and startup; filesystem caches
-and shared workstation load were not reset. Original input reads ranged from
-2.3 to 37.8 s across the four runs.
-Hemisphere assessment now runs before outlier output is written, avoiding a
-separate read/rewrite pass. Hemisphere splitting runs inside inverse-transform
-workers; the following step verifies its outputs. These stages use CPU/Slicer
-in every backend mode.
+The GPU column uses the repeated complete run; the first GPU run took **182.8 s**.
+Slicer workers now initialize only native fiber-bundle/transform logic, preserving
+tensor handling. Startup still ranged from **1.9 to 13.5 s**, and inverse
+transform/separation from **16.0 to 31.9 s** across the four runs. Original input
+reads ranged from **2.6 to 42.5 s**; filesystem caches and shared workstation load
+were not reset. Totals include these waits; worker and I/O profiles were retained.
+Hemisphere assessment runs during outlier writing, and splitting runs inside
+inverse-transform workers; the next step verifies the split outputs. These final
+stages use the same CPU/Slicer code in every backend, so their timing differences
+reflect startup, I/O and scheduling rather than different GPU algorithms.
 
 All modes produced 800 initial, outlier-removed and transformed clusters plus
 74 anatomical tracts (245,946 initial fibers, 130,737 retained, 93,766 anatomical).
@@ -50,8 +50,8 @@ Validation covered all **4,874 VTPs**, the full registered tractogram and
   difference **3.30e-13**.
   All passed coordinate tolerances `rtol=1e-6, atol=1e-5` and transform tolerances
   `rtol=1e-10, atol=1e-10`.
-- The new joblib outputs match the previous `9293224` baseline exactly in values
-  and transforms; transformed VTP serialization/compression differs.
+- The new joblib VTP/VTK outputs and transform files are byte-identical to the
+  previously validated `28ba96a` baseline.
 
 See the [acceleration overview](doc/acceleration.md) for implementation and
 numerical validation details.

@@ -23,6 +23,8 @@ repeated objective evaluation is faster because:
 - Length eligibility and geometry views are reused between registration samples.
   Selected indices are sorted to preserve input fiber order and the original RNG
   sequence without building a full-tractogram selection mask each iteration.
+- Slicer registration reads file-based atlas references as geometry only, omitting
+  unused attributes. Subject attributes remain available for the saved output.
 - **Nonrigid workflows:** B-spline evaluation has batch CPU and CUDA paths,
   avoiding a Python call to VTK for every point. These paths support nonrigid
   registration; the README's `rig` benchmark measures rigid plus affine only.
@@ -84,6 +86,8 @@ This changes memory allocation, not values or precision.
   across subjects. Cache identity includes atlas file metadata, numerical
   settings, backend/precision, library versions and implementation identity.
   Subject-dependent comparisons are always recomputed.
+- The original CPU fallback also reads atlas clusters as geometry only; its
+  keep/reject decisions are checked against full-attribute reference reads.
 - The generic `filter.remove_outliers` API also uses CPU/GPU distance matrices.
   Partial selection finds the three nearest neighbors without sorting every
   distance, while preserving the original summation order and rejection cutoff.
